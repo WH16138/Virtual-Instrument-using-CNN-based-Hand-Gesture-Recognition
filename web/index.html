@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>VisionQuest Mobile Camera</title>
+    <style>
+        body { margin: 0; font-family: Arial, sans-serif; background: #111; color: #eee; display: flex; flex-direction: column; align-items: center; min-height: 100vh; }
+        #video { width: 100%; max-width: 540px; border-radius: 12px; background: #000; }
+        #status { margin: 14px 0; font-size: 1rem; }
+        #controls { display: flex; gap: 10px; flex-wrap: wrap; justify-content: center; }
+        .badge { padding: 10px 14px; border-radius: 999px; background: #222; border: 1px solid #444; color: #fff; font-size: 0.95rem; }
+        a { color: #59f; }
+    </style>
+</head>
+<body>
+    <h1>VisionQuest Mobile Camera</h1>
+    <video id="video" autoplay playsinline muted></video>
+    <div id="status">카메라를 로드하는 중입니다...</div>
+    <div id="controls">
+        <div class="badge" id="connection">WebSocket: 연결되지 않음</div>
+        <div class="badge" id="frames">전송 프레임: 0</div>
+        <div class="badge" id="quality">화질: 0.7</div>
+    </div>
+    <script src="app.js"></script>
+</body>
+</html>

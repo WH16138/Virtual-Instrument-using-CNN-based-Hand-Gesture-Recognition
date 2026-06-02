@@ -1,44 +1,76 @@
-# Virtual-Instrument-using-CNN-based-Hand-Gesture-Recognition
-A computer vision project that enables users to play virtual instruments using real-time hand and finger gesture recognition.
+# VisionQuest
 
-The system detects hand movements and finger positions through a webcam, recognizes gestures using a CNN-based model, and plays corresponding musical sounds in an AR-style virtual environment.
+A computer vision-based AR dungeon battle simulator controlled entirely through hand gestures.
 
----
+## Overview
 
-## 📌 Project Description
+VisionQuest is an interactive AR game that combines markerless augmented reality and hand gesture recognition.
 
-This project aims to create a virtual instrument system using computer vision and deep learning techniques.
+The system detects a planar surface (such as a desk), generates a virtual battlefield on top of it, and allows the player to control combat actions using hand gestures instead of traditional input devices.
 
-By recognizing hand gestures and finger positions, users can interact with virtual instruments such as guitar or piano without using physical instruments.
+The project aims to explore how computer vision techniques can be used to create immersive and intuitive game interactions.
 
-The project focuses on:
-- Hand and finger detection
-- CNN-based gesture recognition
-- Real-time note/chord detection
-- Audio playback for virtual performance
+## Features
 
----
+- Markerless AR battlefield generation on a planar surface
+- Real-time hand gesture recognition using a CNN model
+- Gesture-based combat controls
+  - Attack
+  - Defend
+  - Skill
+- Turn-based dungeon battle system
+- Real-time AR overlay and interaction
 
-## ✨ Planned Features
-
-- Real-time hand tracking using webcam input
-- Finger gesture recognition using CNN
-- Virtual guitar or piano interaction
-- Note and chord detection
-- Real-time sound playback
-- AR-style visual feedback
-
----
-
-## 🛠 Planned Technologies
+## Planned Technologies
 
 - Python
 - OpenCV
-- TensorFlow / Keras / pyTorch
+- NumPy
+- TensorFlow / Keras
+- ORB Feature Detection
+- Homography Estimation
+- Markerless AR Tracking
 
----
+## Project Goal
 
-## 📅 Project Status
+To create a computer vision-driven AR gaming experience that demonstrates the integration of:
 
-Currently in the planning stage.  
-Project structure and features may change during development.
+- Computer Vision
+- Augmented Reality
+- Deep Learning
+- Human-Computer Interaction
+
+while maintaining a complete and playable application.
+
+## Smartphone Camera Streaming
+
+This project now supports using a smartphone camera as the input source via a local WebSocket stream.
+
+### How it works
+
+1. Run the Python application on the PC.
+2. The app starts a static web server and WebSocket frame server.
+3. A QR code is generated and saved as `qr_code.png`.
+4. Scan the QR code from your phone.
+5. The mobile browser requests camera permission and streams JPEG frames to the PC.
+6. The existing OpenCV vision pipeline processes the latest frame directly.
+
+### Run the streaming server
+
+```bash
+pip install -r requirements.txt
+python -m network.websocket_server
+```
+
+### Run the game
+
+```bash
+python main.py
+```
+
+### Notes
+
+- The PC serves the mobile client from `web/index.html`.
+- Frames are sent as JPEG over WebSocket and only the newest frame is kept.
+- The existing pipeline remains unchanged after the frame source switch.
+- If phone camera access fails due to insecure local HTTP, use a browser that supports local network camera access or run the site over HTTPS.
