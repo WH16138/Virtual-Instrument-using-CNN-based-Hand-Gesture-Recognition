@@ -1,4 +1,5 @@
 import threading
+import time
 
 import numpy as np
 
@@ -18,7 +19,7 @@ class FrameReceiver:
             return
         with self._lock:
             self._latest_frame = frame
-            self._last_update = threading.get_ident()
+            self._last_update = time.monotonic()
 
     def get_latest_frame(self):
         """Return the newest available frame or None if no frame has arrived."""
@@ -34,3 +35,15 @@ class FrameReceiver:
     def is_client_connected(self):
         with self._lock:
             return self._client_connected
+
+    def get_last_update_age(self):
+        """Return seconds since the latest frame arrived, or None if no frame arrived."""
+        with self._lock:
+            if self._last_update is None:
+                return None
+            return time.monotonic() - self._last_update
+
+    def is_frame_fresh(self, max_age_seconds: float):
+        """Return True when a frame exists and was updated recently."""
+        age = self.get_last_update_age()
+        return age is not None and age <= max_age_seconds

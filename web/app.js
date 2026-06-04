@@ -4,61 +4,102 @@ const connectionLabel = document.getElementById('connection');
 const framesLabel = document.getElementById('frames');
 const qualityLabel = document.getElementById('quality');
 
-const WS_PORT = 8765;
+const DEFAULT_WS_PORT = 8765;
 const JPEG_QUALITY = 0.7;
 const SEND_INTERVAL_MS = 100;
+const RECONNECT_BASE_DELAY_MS = 1000;
+const RECONNECT_MAX_DELAY_MS = 5000;
+const MAX_BUFFERED_BYTES = 500000;
+const MAX_FRAME_WIDTH = 640;
+
+const canvas = document.createElement('canvas');
+const ctx = canvas.getContext('2d');
+
 let ws = null;
 let frameCount = 0;
 let isReady = false;
 let lastSendTime = 0;
+let reconnectTimer = null;
+let reconnectAttempts = 0;
+
+function getWebSocketPort() {
+    const params = new URLSearchParams(window.location.search);
+    const configuredPort = Number.parseInt(params.get('ws_port'), 10);
+    return Number.isInteger(configuredPort) && configuredPort > 0 ? configuredPort : DEFAULT_WS_PORT;
+}
 
 function updateStatus(text) {
     statusLabel.textContent = text;
 }
 
 function updateConnection(connected) {
-    connectionLabel.textContent = connected ? 'WebSocket: 연결됨' : 'WebSocket: 연결되지 않음';
+    connectionLabel.textContent = connected ? 'WebSocket: connected' : 'WebSocket: disconnected';
     connectionLabel.style.background = connected ? '#154' : '#311';
 }
 
 function updateFrames(count) {
-    framesLabel.textContent = `전송 프레임: ${count}`;
+    framesLabel.textContent = `Frames sent: ${count}`;
+}
+
+function scheduleReconnect() {
+    if (reconnectTimer !== null) {
+        return;
+    }
+
+    const delay = Math.min(RECONNECT_BASE_DELAY_MS * (reconnectAttempts + 1), RECONNECT_MAX_DELAY_MS);
+    reconnectAttempts += 1;
+    updateStatus(`WebSocket disconnected. Reconnecting in ${Math.round(delay / 1000)}s...`);
+
+    reconnectTimer = window.setTimeout(() => {
+        reconnectTimer = null;
+        initWebSocket();
+    }, delay);
 }
 
 function initWebSocket() {
+    if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
+        return;
+    }
+
     const host = window.location.hostname;
-    const wsUrl = `ws://${host}:${WS_PORT}`;
+    const wsUrl = `ws://${host}:${getWebSocketPort()}`;
     ws = new WebSocket(wsUrl);
     ws.binaryType = 'arraybuffer';
 
     ws.onopen = () => {
+        reconnectAttempts = 0;
         updateConnection(true);
-        updateStatus('카메라가 연결되었습니다. 프레임 전송 중...');
+        updateStatus('Camera connected. Streaming frames...');
     };
 
     ws.onclose = () => {
         updateConnection(false);
-        updateStatus('WebSocket 연결이 끊겼습니다. 페이지를 새로고침하세요.');
+        scheduleReconnect();
     };
 
     ws.onerror = () => {
         updateConnection(false);
-        updateStatus('WebSocket 오류가 발생했습니다. 서버를 확인하세요.');
+        if (ws && ws.readyState !== WebSocket.CLOSED) {
+            ws.close();
+        }
     };
 }
 
 async function initCamera() {
     try {
-        const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' }, audio: false });
+        const stream = await navigator.mediaDevices.getUserMedia({
+            video: { facingMode: 'environment' },
+            audio: false
+        });
         video.srcObject = stream;
         await video.play();
         isReady = true;
-        updateStatus('카메라가 활성화되었습니다. 프레임을 전송합니다.');
+        updateStatus('Camera is ready. Connecting to WebSocket...');
         initWebSocket();
         requestAnimationFrame(captureLoop);
     } catch (err) {
         console.error(err);
-        updateStatus('카메라 권한이 필요합니다. 브라우저 설정을 확인하세요.');
+        updateStatus('Camera permission is required. Check browser settings and reload this page.');
     }
 }
 
@@ -68,7 +109,7 @@ function captureLoop(timestamp) {
         return;
     }
 
-    if (timestamp - lastSendTime >= SEND_INTERVAL_MS && ws.bufferedAmount < 500000) {
+    if (timestamp - lastSendTime >= SEND_INTERVAL_MS && ws.bufferedAmount < MAX_BUFFERED_BYTES) {
         lastSendTime = timestamp;
         sendCurrentFrame();
     }
@@ -77,21 +118,28 @@ function captureLoop(timestamp) {
 }
 
 function sendCurrentFrame() {
-    const canvas = document.createElement('canvas');
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
-    const ctx = canvas.getContext('2d');
+    if (video.videoWidth === 0 || video.videoHeight === 0) {
+        return;
+    }
+
+    const scale = Math.min(1, MAX_FRAME_WIDTH / video.videoWidth);
+    canvas.width = Math.round(video.videoWidth * scale);
+    canvas.height = Math.round(video.videoHeight * scale);
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
     canvas.toBlob((blob) => {
         if (blob && ws && ws.readyState === WebSocket.OPEN) {
             blob.arrayBuffer().then((buffer) => {
-                ws.send(buffer);
-                frameCount += 1;
-                updateFrames(frameCount);
+                if (ws && ws.readyState === WebSocket.OPEN) {
+                    ws.send(buffer);
+                    frameCount += 1;
+                    updateFrames(frameCount);
+                }
             });
         }
     }, 'image/jpeg', JPEG_QUALITY);
 }
 
-qualityLabel.textContent = `화질: ${JPEG_QUALITY}`;
+qualityLabel.textContent = `JPEG quality: ${JPEG_QUALITY}`;
+updateConnection(false);
+updateFrames(frameCount);
 initCamera();

@@ -6,12 +6,28 @@ import qrcode
 
 def get_local_ip():
     """Detect the local IPv4 address for the machine on the LAN."""
+    candidates = []
+
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
         try:
             sock.connect(("8.8.8.8", 80))
-            return sock.getsockname()[0]
+            candidates.append(sock.getsockname()[0])
         except OSError:
-            return "127.0.0.1"
+            pass
+
+    try:
+        host_name = socket.gethostname()
+        for info in socket.getaddrinfo(host_name, None, socket.AF_INET):
+            candidates.append(info[4][0])
+    except OSError:
+        pass
+
+    for ip_address in candidates:
+        if ip_address and not ip_address.startswith("127."):
+            return ip_address
+
+    print("Warning: Could not detect a LAN IP address. QR code will use 127.0.0.1, which only works on this PC.")
+    return "127.0.0.1"
 
 
 def generate_qr(url: str, output_path: Path = None):

@@ -2,8 +2,6 @@ import asyncio
 import cv2
 import logging
 import numpy as np
-import os
-import socket
 import threading
 import time
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
@@ -31,11 +29,20 @@ class WebSocketFrameServer:
         self._http_thread = None
         self._ws_server = None
         self._ws_thread = None
+        self._ws_loop = None
+        self._ws_stop_event = None
+        self.page_url = None
+        self.qr_code_path = None
 
     def start(self):
-        self._start_http_server()
-        self._start_ws_server()
-        self._print_qr_code()
+        try:
+            self._start_http_server()
+            self._start_ws_server()
+            self._print_qr_code()
+        except Exception as exc:
+            LOG.error("Failed to start camera streaming server: %s", exc)
+            self.stop()
+            raise
 
     def _start_http_server(self):
         handler = lambda *args, directory=str(self.web_root), **kwargs: SimpleHTTPRequestHandler(*args, directory=directory, **kwargs)
@@ -66,22 +73,50 @@ class WebSocketFrameServer:
             LOG.info("Mobile client disconnected: %s", client_ip)
 
     def _start_ws_server(self):
+        startup_ready = threading.Event()
+        startup_error = []
+
         async def serve_ws():
-            async with serve(self._ws_handler, "0.0.0.0", self.ws_port):
-                LOG.info("WebSocket server listening on ws://0.0.0.0:%d", self.ws_port)
-                await asyncio.Future()
+            self._ws_loop = asyncio.get_running_loop()
+            self._ws_stop_event = asyncio.Event()
+            try:
+                async with serve(self._ws_handler, "0.0.0.0", self.ws_port):
+                    LOG.info("WebSocket server listening on ws://0.0.0.0:%d", self.ws_port)
+                    startup_ready.set()
+                    await self._ws_stop_event.wait()
+            except Exception as exc:
+                startup_error.append(exc)
+                startup_ready.set()
 
         self._ws_thread = threading.Thread(target=lambda: asyncio.run(serve_ws()), daemon=True)
         self._ws_thread.start()
+        startup_ready.wait(timeout=3)
+
+        if startup_error:
+            raise startup_error[0]
+
+        if not startup_ready.is_set():
+            raise TimeoutError(f"Timed out while starting WebSocket server on port {self.ws_port}")
 
     def _print_qr_code(self):
         local_ip = get_local_ip()
-        page_url = f"http://{local_ip}:{self.http_port}/"
-        output_path = Path("qr_code.png")
-        generate_qr(page_url, output_path)
+        self.page_url = f"http://{local_ip}:{self.http_port}/?ws_port={self.ws_port}"
+        self.qr_code_path = Path("qr_code.png")
+        generate_qr(self.page_url, self.qr_code_path)
         LOG.info("Open the following URL on your phone:")
-        LOG.info("  %s", page_url)
-        LOG.info("QR code saved to %s", output_path)
+        LOG.info("  %s", self.page_url)
+        LOG.info("QR code saved to %s", self.qr_code_path)
+
+    def stop(self):
+        if self._http_server is not None:
+            self._http_server.shutdown()
+            self._http_server.server_close()
+            self._http_server = None
+
+        if self._ws_loop is not None and self._ws_loop.is_running() and self._ws_stop_event is not None:
+            self._ws_loop.call_soon_threadsafe(self._ws_stop_event.set)
+            self._ws_loop = None
+            self._ws_stop_event = None
 
     @staticmethod
     def _decode_jpeg(payload: bytes):

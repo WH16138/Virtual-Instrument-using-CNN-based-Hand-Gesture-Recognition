@@ -1,76 +1,325 @@
 # VisionQuest
 
-A computer vision-based AR dungeon battle simulator controlled entirely through hand gestures.
+VisionQuest is a computer-vision based AR dungeon battle simulator controlled by hand gestures.
 
-## Overview
+The project uses a game as the demonstration layer, but the main goal is to show an integrated computer vision pipeline:
 
-VisionQuest is an interactive AR game that combines markerless augmented reality and hand gesture recognition.
+- smartphone camera streaming to a PC
+- hand landmark detection
+- landmark-vector based gesture classification
+- markerless plane registration and homography tracking
+- AR-style battlefield overlay
+- turn-based battle interaction
 
-The system detects a planar surface (such as a desk), generates a virtual battlefield on top of it, and allows the player to control combat actions using hand gestures instead of traditional input devices.
+## Current Status
 
-The project aims to explore how computer vision techniques can be used to create immersive and intuitive game interactions.
+Implemented:
 
-## Features
+- Smartphone camera streaming through a local HTTP page and WebSocket frame server.
+- QR code generation for the mobile camera page.
+- Latest-frame receiver that discards stale frames.
+- Camera stream display in the OpenCV desktop window.
+- MediaPipe HandLandmarker integration for hand landmark extraction.
+- Lightweight gesture model loading from `models/gesture_model.keras`.
+- Gesture classes:
+  - `Fist`
+  - `Open_Palm`
+  - `V_Sign`
+- Basic turn-based battle system.
+- ORB + BFMatcher + RANSAC homography plane registration.
+- AR battlefield renderer for player/enemy positions after plane registration and game start.
+- Standalone gesture model test program at `models/test_gesture_model.py`.
 
-- Markerless AR battlefield generation on a planar surface
-- Real-time hand gesture recognition using a CNN model
-- Gesture-based combat controls
-  - Attack
-  - Defend
-  - Skill
-- Turn-based dungeon battle system
-- Real-time AR overlay and interaction
+In progress / needs validation:
 
-## Planned Technologies
+- Gesture recognition quality is not yet confirmed to be reliable in the full game loop.
+- The model input path has been unified around normalized MediaPipe landmark vectors, so old PNG image datasets should be recollected as `.npy` feature samples.
+- AR overlay requires manual plane registration with `SPACE`; it is not automatic.
+- Some older comments or strings in the code may still have encoding damage and should be cleaned gradually.
 
-- Python
-- OpenCV
-- NumPy
-- TensorFlow / Keras
-- ORB Feature Detection
-- Homography Estimation
-- Markerless AR Tracking
+## Requirements
 
-## Project Goal
-
-To create a computer vision-driven AR gaming experience that demonstrates the integration of:
-
-- Computer Vision
-- Augmented Reality
-- Deep Learning
-- Human-Computer Interaction
-
-while maintaining a complete and playable application.
-
-## Smartphone Camera Streaming
-
-This project now supports using a smartphone camera as the input source via a local WebSocket stream.
-
-### How it works
-
-1. Run the Python application on the PC.
-2. The app starts a static web server and WebSocket frame server.
-3. A QR code is generated and saved as `qr_code.png`.
-4. Scan the QR code from your phone.
-5. The mobile browser requests camera permission and streams JPEG frames to the PC.
-6. The existing OpenCV vision pipeline processes the latest frame directly.
-
-### Run the streaming server
+Install Python dependencies:
 
 ```bash
 pip install -r requirements.txt
-python -m network.websocket_server
 ```
 
-### Run the game
+The expected model files are:
+
+```text
+models/hand_landmarker.task
+models/gesture_model.keras
+```
+
+## Running the Game
+
+Start the full application:
 
 ```bash
 python main.py
 ```
 
-### Notes
+`main.py` starts both servers automatically:
 
-- The PC serves the mobile client from `web/index.html`.
-- Frames are sent as JPEG over WebSocket and only the newest frame is kept.
-- The existing pipeline remains unchanged after the frame source switch.
-- If phone camera access fails due to insecure local HTTP, use a browser that supports local network camera access or run the site over HTTPS.
+- HTTP mobile page server: `http://<PC_IP>:8000/?ws_port=8765`
+- WebSocket frame server: `ws://<PC_IP>:8765`
+
+After startup:
+
+1. Make sure the PC and phone are on the same network.
+2. Scan the QR code shown in the PC OpenCV waiting window, open the generated `qr_code.png`, or use the printed URL.
+3. Allow camera access on the phone.
+4. Confirm the phone page shows:
+   - `WebSocket: connected`
+   - increasing `Frames sent`
+5. The PC OpenCV window should show the phone camera stream.
+
+Controls in the PC OpenCV window:
+
+- `Q`: quit
+- `SPACE`: register the current plane
+- `SPACE` again after registration: start the battle manually
+- `R`: reset the game
+
+## Mobile Camera Notes
+
+Mobile browsers often block camera access on insecure LAN HTTP pages.
+
+For quick testing in Chrome on Android, you can use:
+
+```text
+chrome://flags/#unsafely-treat-insecure-origin-as-secure
+```
+
+Add the project URL, for example:
+
+```text
+http://<PC_IP>:8000
+```
+
+Then restart Chrome and reload the page.
+
+If the page loads but WebSocket stays disconnected:
+
+- check Windows Firewall for Python inbound access
+- ensure port `8765` is reachable from the phone
+- confirm the URL includes `?ws_port=8765`
+
+## Capturing and Training Gesture Data
+
+There are two gesture training pipelines. Dataset capture can save both formats at once.
+
+### Recommended Capture: Both Formats
+
+Use this by default so one recording session can support both future CNN experiments and the current landmark MLP runtime:
+
+```bash
+python vision/dataset_capture.py
+```
+
+Equivalent explicit command:
+
+```bash
+python vision/dataset_capture.py --mode both
+```
+
+This saves:
+
+```text
+dataset/<class>/*.png
+dataset_landmarks/<class>/*.npy
+```
+
+Both files share the same timestamp, so samples can be matched later if needed.
+
+### Option A: Landmark MLP (current runtime default)
+
+The gesture pipeline uses normalized 63-value landmark feature vectors:
+
+```text
+21 landmarks x (x, y, z) = 63 values
+```
+
+Collect landmark training samples:
+
+```bash
+python vision/dataset_capture.py --mode landmarks
+```
+
+Equivalent direct script:
+
+```bash
+python vision/dataset_capture_landmarks.py
+```
+
+Controls:
+
+- `1`: save `Fist`
+- `2`: save `Open_Palm`
+- `3`: save `V_Sign`
+- `Q`: quit
+
+Train the model:
+
+```bash
+python models/train.py --mode landmarks
+```
+
+Equivalent direct script:
+
+```bash
+python models/train_landmarks.py
+```
+
+The trainer reads `.npy` feature files from:
+
+```text
+dataset_landmarks/Fist/
+dataset_landmarks/Open_Palm/
+dataset_landmarks/V_Sign/
+```
+
+The older `dataset/` folder can be kept for future CNN/image experiments. It is not used by the current landmark-vector trainer.
+
+The landmark pipeline saves a scikit-learn model by default:
+
+```text
+models/gesture_model.pkl
+```
+
+This is the default runtime model used by `main.py`, and it avoids TensorFlow native DLL issues.
+
+### Option B: PNG CNN (kept for future experiments)
+
+This path preserves the older image/CNN idea.
+
+Capture PNG hand crops:
+
+```bash
+python vision/dataset_capture.py --mode cnn
+```
+
+Equivalent direct script:
+
+```bash
+python vision/dataset_capture_cnn.py
+```
+
+Train the CNN:
+
+```bash
+python models/train.py --mode cnn
+```
+
+Equivalent direct script:
+
+```bash
+python models/train_cnn.py
+```
+
+The CNN trainer reads PNG files from:
+
+```text
+dataset/Fist/
+dataset/Open_Palm/
+dataset/V_Sign/
+```
+
+CNN PNG samples are saved from the clean camera frame before UI text or MediaPipe landmark drawings are added.
+
+The CNN output defaults to:
+
+```text
+models/gesture_model_cnn.keras
+```
+
+Note: the current `main.py` runtime uses the landmark-vector `.pkl` detector. Using the CNN `.keras` model in the game later will require TensorFlow to load correctly plus a separate CNN runtime detector or detector mode switch.
+
+## Testing the Gesture Model Only
+
+To test the trained model without the AR/game loop:
+
+```bash
+python models/test_gesture_model.py
+```
+
+Optional camera index:
+
+```bash
+python models/test_gesture_model.py --camera 1
+```
+
+Optional model path:
+
+```bash
+python models/test_gesture_model.py --model models/gesture_model.keras
+```
+
+The test window shows:
+
+- detected hand landmarks
+- left/right hand predicted class
+- confidence
+- smoothed class
+- detected hand count
+- FPS
+
+Use this script before debugging the full game. If this test cannot recognize hands or gestures reliably, the issue is in the vision/model pipeline rather than AR or battle logic.
+
+## Project Structure
+
+```text
+ar/
+  plane_tracker.py      ORB feature extraction and homography tracking
+  homography.py         coordinate transforms and grid drawing helpers
+  ar_renderer.py        AR battlefield overlay
+
+game/
+  battle_system.py      turn state and combat resolution
+  game_manager.py       bridge between gesture input and battle system
+  player.py
+  enemy.py
+  skills.py
+
+models/
+  train.py              CNN training script
+  test_gesture_model.py standalone gesture model test runner
+  gesture_model.keras   trained gesture model
+  hand_landmarker.task  MediaPipe hand landmark model
+
+network/
+  frame_receiver.py     thread-safe latest-frame storage
+  websocket_server.py   HTTP server and WebSocket JPEG frame receiver
+  qr_generator.py       LAN URL QR code generation
+
+ui/
+  hud.py                OpenCV HUD drawing helpers
+
+vision/
+  hand_tracker.py       MediaPipe hand landmark wrapper
+  gesture_detector.py   Keras gesture classifier wrapper
+  dataset_capture.py    camera-based dataset capture helper
+  dataset_collector.py  landmark-image dataset helper
+
+web/
+  index.html            mobile camera page
+  app.js                mobile camera capture and WebSocket sender
+```
+
+## MVP Completion Checklist
+
+- [x] Smartphone camera input path
+- [x] Real-time desktop display of streamed frames
+- [x] Hand landmark detection integration
+- [x] Landmark-vector gesture model loading
+- [x] Basic gesture-to-action mapping
+- [x] Turn-based battle states
+- [x] HP display
+- [x] Manual plane registration
+- [x] Homography-based AR overlay path
+- [ ] Recollected `.npy` landmark dataset in `dataset_landmarks/` for all three gestures
+- [ ] Reliable gesture recognition in the full game loop
+- [ ] Verified AR overlay stability under phone camera motion
+- [ ] Clean all broken encoded UI strings
+- [ ] Document final demo workflow after validation

@@ -1,4 +1,5 @@
 import cv2
+import cv2
 import importlib
 import numpy as np
 import tempfile
@@ -23,6 +24,7 @@ class HandTracker:
         )
         self.hand_connections = self.hand_module.HandLandmarksConnections.HAND_CONNECTIONS
         self.temp_image_path = Path(tempfile.gettempdir()) / "mediapipe_hand_tracker_frame.jpg"
+        self.image_format = getattr(self.image_module, "ImageFormat", None)
         self.max_num_hands = max_num_hands
         self.min_hand_detection_confidence = min_hand_detection_confidence
         self.min_hand_presence_confidence = min_hand_presence_confidence
@@ -45,6 +47,16 @@ class HandTracker:
         )
 
     def _prepare_image(self, frame):
+        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        if self.image_format is not None:
+            try:
+                return self.image_module.Image(
+                    image_format=self.image_format.SRGB,
+                    data=rgb_frame,
+                )
+            except Exception:
+                pass
+
         cv2.imwrite(str(self.temp_image_path), frame)
         return self.image_module.Image.create_from_file(str(self.temp_image_path))
 

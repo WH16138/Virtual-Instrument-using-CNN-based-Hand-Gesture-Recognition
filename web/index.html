@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="ko">
+<html lang="en">
 <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -16,11 +16,11 @@
 <body>
     <h1>VisionQuest Mobile Camera</h1>
     <video id="video" autoplay playsinline muted></video>
-    <div id="status">카메라를 로드하는 중입니다...</div>
+    <div id="status">Loading camera...</div>
     <div id="controls">
-        <div class="badge" id="connection">WebSocket: 연결되지 않음</div>
-        <div class="badge" id="frames">전송 프레임: 0</div>
-        <div class="badge" id="quality">화질: 0.7</div>
+        <div class="badge" id="connection">WebSocket: disconnected</div>
+        <div class="badge" id="frames">Frames sent: 0</div>
+        <div class="badge" id="quality">JPEG quality: 0.7</div>
     </div>
     <script src="app.js"></script>
 </body>
