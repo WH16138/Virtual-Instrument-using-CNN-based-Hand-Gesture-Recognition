@@ -156,24 +156,38 @@ def draw_a4_detection_highlight(frame, tracking_result, plane_registered):
         )
 
     marker_centers = tracking_result.get("marker_centers")
+    marker_observed = tracking_result.get("marker_observed")
     if marker_centers is not None:
-        for point in np.asarray(marker_centers, dtype=np.int32):
-            cv2.circle(frame, tuple(point), 9, (0, 0, 255), 2, cv2.LINE_AA)
+        marker_points = np.asarray(marker_centers, dtype=np.int32)
+        if marker_observed is None:
+            marker_observed = np.ones(len(marker_points), dtype=bool)
+        else:
+            marker_observed = np.asarray(marker_observed, dtype=bool)
+        for point, observed in zip(marker_points, marker_observed):
+            marker_color = (0, 0, 255) if observed else (0, 165, 255)
+            cv2.circle(frame, tuple(point), 9, marker_color, 2, cv2.LINE_AA)
             cv2.circle(frame, tuple(point), 2, (255, 255, 255), -1, cv2.LINE_AA)
+            if not observed:
+                cv2.line(frame, (point[0] - 6, point[1] - 6), (point[0] + 6, point[1] + 6), marker_color, 1, cv2.LINE_AA)
+                cv2.line(frame, (point[0] - 6, point[1] + 6), (point[0] + 6, point[1] - 6), marker_color, 1, cv2.LINE_AA)
 
+    confidence = tracking_result.get("homography_confidence", tracking_result.get("track_score", 0.0))
+    matched_points = tracking_result.get("matched_points", 0)
     if stale:
         text = "A4 temporarily occluded - holding last corners"
     elif tracking_result.get("tracking_method") == "corner_marks":
-        text = "A4 corner marks detected"
+        text = f"A4 corner marks detected ({matched_points}/4, H {confidence:.2f})"
+    elif tracking_result.get("tracking_method") == "redetect_corner_marks":
+        text = f"A4 re-detected ({matched_points}/4, H {confidence:.2f})"
     elif tracking_result.get("tracking_method") == "marker_track":
         score = tracking_result.get("track_score", 0.0)
-        text = f"A4 marker tracking ({score:.2f})"
+        text = f"A4 marker tracking ({score:.2f}, H {confidence:.2f})"
     elif tracking_result.get("tracking_method") == "optical_flow":
         score = tracking_result.get("track_score", 0.0)
-        text = f"A4 optical flow tracking ({score:.2f})"
+        text = f"A4 optical flow tracking ({matched_points}/4, H {confidence:.2f})"
     elif tracking_result.get("tracking_method") == "patch_track":
         score = tracking_result.get("track_score", 0.0)
-        text = f"A4 tracked from previous frame ({score:.2f})"
+        text = f"A4 tracked from previous frame ({score:.2f}, H {confidence:.2f})"
     elif plane_registered:
         text = "A4 detected / registered"
     else:
