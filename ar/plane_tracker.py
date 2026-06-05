@@ -136,42 +136,34 @@ class PlaneTracker:
         marker_result = self._track_last_markers(gray)
         if marker_result is not None:
             return marker_result
-
-        tracked_corners, track_score = self._track_last_corners(gray)
-        if tracked_corners is None:
-            return None
-
-        source = self._board_points_for_corners(tracked_corners)
-        H = HomographyEstimator.compute_homography(source, tracked_corners)
-        self.last_corners = tracked_corners
-        self.last_homography = H
-        self.last_gray = gray
-        self.missed_frames = 0
-        return {
-            "success": True,
-            "H": H,
-            "matched_points": 4,
-            "corners": tracked_corners,
-            "marker_centers": None,
-            "stale": False,
-            "tracking_method": "patch_track",
-            "track_score": track_score,
-        }
+        return None
 
     def _track_last_markers(self, gray):
         if self.last_marker_centers is None or self.last_gray is None:
             return None
 
-        tracked = []
-        scores = []
-        for marker in self.last_marker_centers:
-            next_marker, score = self._track_one_corner(self.last_gray, gray, marker)
-            if next_marker is None or score < self.min_track_score:
-                return None
-            tracked.append(next_marker)
-            scores.append(score)
+        previous_points = np.asarray(self.last_marker_centers, dtype=np.float32).reshape(-1, 1, 2)
+        next_points, status, errors = cv2.calcOpticalFlowPyrLK(
+            self.last_gray,
+            gray,
+            previous_points,
+            None,
+            winSize=(31, 31),
+            maxLevel=2,
+            criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 20, 0.03),
+        )
+        if next_points is None or status is None:
+            return None
 
-        marker_centers = np.asarray(tracked, dtype=np.float32)
+        status = status.reshape(-1)
+        if np.count_nonzero(status) < 4:
+            return None
+
+        marker_centers = next_points.reshape(-1, 2).astype(np.float32)
+        movement = np.linalg.norm(marker_centers - self.last_marker_centers, axis=1)
+        if np.max(movement) > self.marker_roi_radius * 1.5:
+            return None
+
         if self._order_quad_points(marker_centers) is None:
             return None
 
@@ -206,8 +198,8 @@ class PlaneTracker:
             "corners": board_corners,
             "marker_centers": marker_centers,
             "stale": False,
-            "tracking_method": "marker_track",
-            "track_score": float(np.mean(scores)),
+            "tracking_method": "optical_flow",
+            "track_score": 1.0 / (1.0 + float(np.mean(errors[status == 1]))),
         }
 
     def _detect_corner_marks(self, gray):
@@ -230,8 +222,12 @@ class PlaneTracker:
             candidate = self._component_to_mark_candidate(component, image_area, width, height)
             if candidate is None:
                 continue
-            slot_name = self._candidate_corner_slot(candidate["center"], frame_center)
+            slot_name = self._candidate_corner_slot(candidate["blob_center"], frame_center)
             if slot_name is not None:
+                mark_corner = self._estimate_l_mark_corner(component, slot_name)
+                if mark_corner is None:
+                    continue
+                candidate["center"] = mark_corner
                 slots[slot_name]["candidates"].append(candidate)
 
         selected = []
@@ -277,8 +273,8 @@ class PlaneTracker:
         marker_centers = []
         scores = []
         image_area = gray.shape[0] * gray.shape[1]
-        for point in predicted:
-            marker, score = self._detect_one_mark_near(gray, point)
+        for slot_name, point in zip(("tl", "tr", "br", "bl"), predicted):
+            marker, score = self._detect_one_mark_near(gray, point, slot_name)
             if marker is None:
                 return None
             marker_centers.append(marker)
@@ -305,7 +301,7 @@ class PlaneTracker:
             "score": float(np.mean(scores)),
         }
 
-    def _detect_one_mark_near(self, gray, predicted):
+    def _detect_one_mark_near(self, gray, predicted, slot_name):
         height, width = gray.shape[:2]
         radius = self.marker_roi_radius
         cx = int(round(predicted[0]))
@@ -335,7 +331,11 @@ class PlaneTracker:
             if candidate is None:
                 continue
 
-            candidate_center = candidate["center"] + np.array([x1, y1], dtype=np.float32)
+            mark_corner = self._estimate_l_mark_corner(component, slot_name)
+            if mark_corner is None:
+                continue
+
+            candidate_center = mark_corner + np.array([x1, y1], dtype=np.float32)
             distance = np.linalg.norm(candidate_center - predicted)
             if distance > radius * 0.85:
                 continue
@@ -423,10 +423,59 @@ class PlaneTracker:
 
         return {
             "center": center,
+            "blob_center": center.copy(),
             "area": area,
             "box": (x_min, y_min, x_max, y_max),
             "fill_ratio": fill_ratio,
         }
+
+    def _estimate_l_mark_corner(self, pixels, slot_name):
+        if len(pixels) < 4:
+            return None
+
+        int_pixels = np.asarray(np.round(pixels), dtype=np.int32)
+        x_min = int(np.min(int_pixels[:, 0]))
+        y_min = int(np.min(int_pixels[:, 1]))
+        x_max = int(np.max(int_pixels[:, 0]))
+        y_max = int(np.max(int_pixels[:, 1]))
+        width = x_max - x_min + 1
+        height = y_max - y_min + 1
+        if width < 3 or height < 3:
+            return None
+
+        local = np.zeros((height, width), dtype=np.uint8)
+        local[int_pixels[:, 1] - y_min, int_pixels[:, 0] - x_min] = 255
+        corners = cv2.goodFeaturesToTrack(
+            local,
+            maxCorners=8,
+            qualityLevel=0.01,
+            minDistance=4,
+            blockSize=5,
+        )
+
+        candidates = []
+        if corners is not None:
+            for corner in corners.reshape(-1, 2):
+                candidates.append(corner + np.array([x_min, y_min], dtype=np.float32))
+
+        x = pixels[:, 0]
+        y = pixels[:, 1]
+        if slot_name == "tl":
+            candidates.append(pixels[int(np.argmin(x + y))])
+            key = lambda point: point[0] + point[1]
+            return np.asarray(min(candidates, key=key), dtype=np.float32)
+        if slot_name == "tr":
+            candidates.append(pixels[int(np.argmax(x - y))])
+            key = lambda point: point[0] - point[1]
+            return np.asarray(max(candidates, key=key), dtype=np.float32)
+        if slot_name == "br":
+            candidates.append(pixels[int(np.argmax(x + y))])
+            key = lambda point: point[0] + point[1]
+            return np.asarray(max(candidates, key=key), dtype=np.float32)
+
+        candidates.append(pixels[int(np.argmin(x - y))])
+        key = lambda point: point[0] - point[1]
+        return np.asarray(min(candidates, key=key), dtype=np.float32)
 
     def _candidate_corner_slot(self, center, frame_center):
         if self.last_marker_centers is not None:
