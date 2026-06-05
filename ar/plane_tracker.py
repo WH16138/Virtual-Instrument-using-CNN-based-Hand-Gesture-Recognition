@@ -19,12 +19,17 @@ class PlaneTracker:
         self.missed_frames = 0
         self.max_missed_frames = 10
         self.corner_smoothing = 0.35
+        self.min_homography_confidence = 0.28
+        self.redetection_interval = 4
+        self.last_homography_confidence = 0.0
+        self.last_marker_observed = None
         self.track_patch_radius = 8
         self.track_search_radius = 28
         self.min_track_score = 0.58
         self.last_marker_centers = None
         self.marker_lock_radius = 70.0
         self.marker_roi_radius = 72
+        self.frame_index = 0
 
     def register_plane(self, frame):
         result = self.track_plane(frame)
@@ -43,33 +48,20 @@ class PlaneTracker:
         self.is_registered = True
         self.last_corners = result["corners"]
         self.last_homography = result["H"]
+        self.last_homography_confidence = result.get("homography_confidence", result.get("track_score", 1.0))
         if result.get("marker_centers") is not None:
             self.last_marker_centers = result["marker_centers"]
+        if result.get("marker_observed") is not None:
+            self.last_marker_observed = result["marker_observed"]
         return True
 
     def track_plane(self, frame):
+        self.frame_index += 1
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
         marker_result = self._detect_corner_marks(gray)
         if marker_result is not None:
-            H = marker_result["H"]
-            corners = marker_result["corners"]
-            if self.is_registered:
-                self.last_corners = corners
-                self.last_homography = H
-                self.last_gray = gray
-                self.last_marker_centers = marker_result["marker_centers"]
-                self.missed_frames = 0
-            return {
-                "success": True,
-                "H": H,
-                "matched_points": 4,
-                "corners": corners,
-                "marker_centers": marker_result["marker_centers"],
-                "stale": False,
-                "tracking_method": "corner_marks",
-                "track_score": marker_result["score"],
-            }
+            return self._accept_marker_result(marker_result, gray, "corner_marks")
 
         if not self.is_registered:
             corners = self._detect_centered_a4_corners(frame)
@@ -96,6 +88,8 @@ class PlaneTracker:
                 "stale": True,
                 "tracking_method": "hold_last",
                 "track_score": 0.0,
+                "homography_confidence": max(0.0, self.last_homography_confidence * 0.45),
+                "marker_observed": self.last_marker_observed,
             }
         return {"success": False, "H": None, "matched_points": 0, "corners": None}
 
@@ -111,6 +105,8 @@ class PlaneTracker:
             "stale": False,
             "tracking_method": method,
             "track_score": score,
+            "homography_confidence": score,
+            "marker_observed": None,
         }
 
     def _result_from_corners(self, corners, gray, method, score):
@@ -120,6 +116,7 @@ class PlaneTracker:
         self.last_corners = corners
         self.last_homography = H
         self.last_gray = gray
+        self.last_homography_confidence = score
         self.missed_frames = 0
         return {
             "success": True,
@@ -130,12 +127,23 @@ class PlaneTracker:
             "stale": False,
             "tracking_method": method,
             "track_score": score,
+            "homography_confidence": score,
+            "marker_observed": None,
         }
 
     def _tracking_fallback(self, gray):
         marker_result = self._track_last_markers(gray)
         if marker_result is not None:
             return marker_result
+
+        tracked_corners, score = self._track_last_corners(gray)
+        if tracked_corners is not None:
+            return self._result_from_corners(tracked_corners, gray, "patch_track", score)
+
+        if self.frame_index % self.redetection_interval == 0:
+            marker_result = self._detect_corner_marks_global(gray, allow_partial=True)
+            if marker_result is not None:
+                return self._accept_marker_result(marker_result, gray, "redetect_corner_marks")
         return None
 
     def _track_last_markers(self, gray):
@@ -155,61 +163,42 @@ class PlaneTracker:
         if next_points is None or status is None:
             return None
 
-        status = status.reshape(-1)
-        if np.count_nonzero(status) < 4:
+        observed = status.reshape(-1).astype(bool)
+        valid_count = int(np.count_nonzero(observed))
+        if valid_count < 3:
             return None
 
         marker_centers = next_points.reshape(-1, 2).astype(np.float32)
-        movement = np.linalg.norm(marker_centers - self.last_marker_centers, axis=1)
-        if np.max(movement) > self.marker_roi_radius * 1.5:
+        valid_movement = marker_centers[observed] - self.last_marker_centers[observed]
+        if np.max(np.linalg.norm(valid_movement, axis=1)) > self.marker_roi_radius * 1.5:
             return None
+
+        if valid_count < 4:
+            median_displacement = np.median(valid_movement, axis=0).astype(np.float32)
+            marker_centers[~observed] = self.last_marker_centers[~observed] + median_displacement
 
         if self._order_quad_points(marker_centers) is None:
             return None
 
-        height, width = gray.shape[:2]
-        frame_center = np.array([width / 2.0, height / 2.0], dtype=np.float32)
-        dummy_group = [{"area": 1.0} for _ in range(4)]
-        if self._score_marker_quad(marker_centers, dummy_group, frame_center, width * height) is None:
+        error_values = errors.reshape(-1)[observed] if errors is not None else np.zeros(valid_count, dtype=np.float32)
+        flow_score = 1.0 / (1.0 + float(np.mean(error_values)))
+        marker_result = self._build_marker_result(marker_centers, observed, gray.shape, flow_score)
+        if marker_result is None:
             return None
-
-        H = HomographyEstimator.compute_homography(self._marker_board_points(), marker_centers)
-        board_corners = np.asarray(
-            [
-                HomographyEstimator.transform_point((0, 0), H),
-                HomographyEstimator.transform_point((self.A4_WIDTH, 0), H),
-                HomographyEstimator.transform_point((self.A4_WIDTH, self.A4_HEIGHT), H),
-                HomographyEstimator.transform_point((0, self.A4_HEIGHT), H),
-            ],
-            dtype=np.float32,
-        )
-        if not self._validate_tracked_corners(board_corners, gray.shape):
-            return None
-
-        self.last_marker_centers = marker_centers
-        self.last_corners = board_corners
-        self.last_homography = H
-        self.last_gray = gray
-        self.missed_frames = 0
-        return {
-            "success": True,
-            "H": H,
-            "matched_points": 4,
-            "corners": board_corners,
-            "marker_centers": marker_centers,
-            "stale": False,
-            "tracking_method": "optical_flow",
-            "track_score": 1.0 / (1.0 + float(np.mean(errors[status == 1]))),
-        }
+        return self._accept_marker_result(marker_result, gray, "optical_flow")
 
     def _detect_corner_marks(self, gray):
         if self.is_registered and self.last_homography is not None:
-            return self._detect_corner_marks_near_prediction(gray)
+            predicted_result = self._detect_corner_marks_near_prediction(gray)
+            if predicted_result is not None:
+                return predicted_result
+        return self._detect_corner_marks_global(gray, allow_partial=self.is_registered)
 
+    def _detect_corner_marks_global(self, gray, allow_partial=False):
         mask = self._dark_mark_mask(gray)
         image_area = gray.shape[0] * gray.shape[1]
         components = self._connected_components(mask, min_pixels=max(8, int(image_area * 0.000015)))
-        if len(components) < 4:
+        if len(components) < (3 if allow_partial else 4):
             return None
 
         height, width = gray.shape[:2]
@@ -222,7 +211,10 @@ class PlaneTracker:
             candidate = self._component_to_mark_candidate(component, image_area, width, height)
             if candidate is None:
                 continue
-            slot_name = self._candidate_corner_slot(candidate["blob_center"], frame_center)
+            if allow_partial and self.last_marker_centers is not None:
+                slot_name = self._quadrant_corner_slot(candidate["blob_center"], frame_center)
+            else:
+                slot_name = self._candidate_corner_slot(candidate["blob_center"], frame_center)
             if slot_name is not None:
                 mark_corner = self._estimate_l_mark_corner(component, slot_name)
                 if mark_corner is None:
@@ -230,55 +222,60 @@ class PlaneTracker:
                 candidate["center"] = mark_corner
                 slots[slot_name]["candidates"].append(candidate)
 
+        marker_centers = []
         selected = []
-        for slot_name in ("tl", "tr", "br", "bl"):
+        observed = []
+        predicted = self._predicted_marker_points() if allow_partial else None
+        for index, slot_name in enumerate(("tl", "tr", "br", "bl")):
             slot = slots[slot_name]
-            if not slot["candidates"]:
+            if slot["candidates"]:
+                best = self._select_best_mark_candidate(slot["candidates"], slot["anchor"])
+                selected.append(best)
+                marker_centers.append(best["center"])
+                observed.append(True)
+            elif predicted is not None:
+                selected.append({"area": 1.0})
+                marker_centers.append(predicted[index])
+                observed.append(False)
+            else:
                 return None
-            selected.append(self._select_best_mark_candidate(slot["candidates"], slot["anchor"]))
 
-        ordered = np.asarray([item["center"] for item in selected], dtype=np.float32)
+        observed = np.asarray(observed, dtype=bool)
+        if int(np.count_nonzero(observed)) < (3 if allow_partial else 4):
+            return None
+
+        ordered = np.asarray(marker_centers, dtype=np.float32)
         if self._order_quad_points(ordered) is None:
             return None
         score = self._score_marker_quad(ordered, selected, frame_center, image_area)
         if score is None:
             return None
 
-        marker_board_points = self._marker_board_points()
-        H = HomographyEstimator.compute_homography(marker_board_points, ordered)
-        board_corners = self._board_corners_from_homography(H)
-
-        if not self._validate_tracked_corners(board_corners, gray.shape):
-            return None
-
-        return {
-            "H": H,
-            "corners": board_corners,
-            "marker_centers": ordered,
-            "score": 1.0 / (1.0 + float(score)),
-        }
+        candidate_score = 1.0 / (1.0 + float(score))
+        return self._build_marker_result(ordered, observed, gray.shape, candidate_score)
 
     def _detect_corner_marks_near_prediction(self, gray):
-        predicted = np.asarray(
-            [
-                HomographyEstimator.transform_point(tuple(point), self.last_homography)
-                for point in self._marker_board_points()
-            ],
-            dtype=np.float32,
-        )
-
-        if predicted.shape != (4, 2):
+        predicted = self._predicted_marker_points()
+        if predicted is None or predicted.shape != (4, 2):
             return None
 
         marker_centers = []
         scores = []
-        image_area = gray.shape[0] * gray.shape[1]
+        observed = []
         for slot_name, point in zip(("tl", "tr", "br", "bl"), predicted):
             marker, score = self._detect_one_mark_near(gray, point, slot_name)
             if marker is None:
-                return None
-            marker_centers.append(marker)
-            scores.append(score)
+                marker_centers.append(point)
+                scores.append(0.0)
+                observed.append(False)
+            else:
+                marker_centers.append(marker)
+                scores.append(score)
+                observed.append(True)
+
+        observed = np.asarray(observed, dtype=bool)
+        if int(np.count_nonzero(observed)) < 3:
+            return None
 
         ordered = np.asarray(marker_centers, dtype=np.float32)
         if self._order_quad_points(ordered) is None:
@@ -286,20 +283,12 @@ class PlaneTracker:
 
         frame_center = np.array([gray.shape[1] / 2.0, gray.shape[0] / 2.0], dtype=np.float32)
         dummy_group = [{"area": 1.0} for _ in range(4)]
-        if self._score_marker_quad(ordered, dummy_group, frame_center, image_area) is None:
+        if self._score_marker_quad(ordered, dummy_group, frame_center, gray.shape[0] * gray.shape[1]) is None:
             return None
 
-        H = HomographyEstimator.compute_homography(self._marker_board_points(), ordered)
-        board_corners = self._board_corners_from_homography(H)
-        if not self._validate_tracked_corners(board_corners, gray.shape):
-            return None
-
-        return {
-            "H": H,
-            "corners": board_corners,
-            "marker_centers": ordered,
-            "score": float(np.mean(scores)),
-        }
+        observed_scores = [score for score, is_observed in zip(scores, observed) if is_observed]
+        candidate_score = float(np.mean(observed_scores)) if observed_scores else 0.0
+        return self._build_marker_result(ordered, observed, gray.shape, candidate_score)
 
     def _detect_one_mark_near(self, gray, predicted, slot_name):
         height, width = gray.shape[:2]
@@ -361,6 +350,122 @@ class PlaneTracker:
             ],
             dtype=np.float32,
         )
+
+    def _predicted_marker_points(self):
+        if self.last_homography is None:
+            if self.last_marker_centers is None:
+                return None
+            last = np.asarray(self.last_marker_centers, dtype=np.float32)
+            return last if last.shape == (4, 2) else None
+
+        return np.asarray(
+            [
+                HomographyEstimator.transform_point(tuple(point), self.last_homography)
+                for point in self._marker_board_points()
+            ],
+            dtype=np.float32,
+        )
+
+    def _build_marker_result(self, marker_centers, observed, image_shape, detector_score):
+        marker_centers = np.asarray(marker_centers, dtype=np.float32)
+        observed = np.asarray(observed, dtype=bool)
+        if marker_centers.shape != (4, 2) or observed.shape != (4,):
+            return None
+        if int(np.count_nonzero(observed)) < 3:
+            return None
+
+        H = HomographyEstimator.compute_homography(self._marker_board_points(), marker_centers)
+        board_corners = self._board_corners_from_homography(H)
+        if not self._validate_tracked_corners(board_corners, image_shape):
+            return None
+
+        confidence = self._estimate_homography_confidence(
+            H,
+            marker_centers,
+            observed,
+            image_shape,
+            detector_score,
+        )
+        if confidence < self.min_homography_confidence:
+            return None
+
+        return {
+            "H": H,
+            "corners": board_corners,
+            "marker_centers": marker_centers,
+            "marker_observed": observed,
+            "score": confidence,
+            "homography_confidence": confidence,
+            "matched_points": int(np.count_nonzero(observed)),
+        }
+
+    def _accept_marker_result(self, marker_result, gray, method):
+        H = marker_result["H"]
+        corners = self._stabilize_corners(
+            marker_result["corners"],
+            confidence=marker_result.get("homography_confidence", marker_result.get("score", 1.0)),
+        )
+        if corners is not marker_result["corners"]:
+            H = HomographyEstimator.compute_homography(self._board_points_for_corners(corners), corners)
+
+        marker_centers = marker_result["marker_centers"].astype(np.float32)
+        if self.last_marker_centers is not None:
+            observed = marker_result.get("marker_observed")
+            if observed is not None:
+                observed = np.asarray(observed, dtype=bool)
+                marker_centers[~observed] = self.last_marker_centers[~observed]
+                marker_centers = (self.last_marker_centers * 0.25 + marker_centers * 0.75).astype(np.float32)
+
+        confidence = marker_result.get("homography_confidence", marker_result.get("score", 1.0))
+        self.last_corners = corners
+        self.last_homography = H
+        self.last_gray = gray
+        self.last_marker_centers = marker_centers
+        self.last_marker_observed = marker_result.get("marker_observed")
+        self.last_homography_confidence = confidence
+        self.missed_frames = 0
+
+        return {
+            "success": True,
+            "H": H,
+            "matched_points": marker_result.get("matched_points", 4),
+            "corners": corners,
+            "marker_centers": marker_centers,
+            "marker_observed": marker_result.get("marker_observed"),
+            "stale": False,
+            "tracking_method": method,
+            "track_score": marker_result.get("score", confidence),
+            "homography_confidence": confidence,
+        }
+
+    def _estimate_homography_confidence(self, H, marker_centers, observed, image_shape, detector_score):
+        projected = np.asarray(
+            [HomographyEstimator.transform_point(tuple(point), H) for point in self._marker_board_points()],
+            dtype=np.float32,
+        )
+        observed_count = max(int(np.count_nonzero(observed)), 1)
+        residual = np.linalg.norm(projected[observed] - marker_centers[observed], axis=1)
+        residual_score = 1.0 / (1.0 + float(np.mean(residual))) if residual.size else 0.0
+        observed_score = observed_count / 4.0
+
+        temporal_score = 1.0
+        if self.last_marker_centers is not None:
+            shift = np.linalg.norm(marker_centers[observed] - self.last_marker_centers[observed], axis=1)
+            temporal_score = 1.0 / (1.0 + float(np.mean(shift)) / max(self.marker_roi_radius, 1.0)) if shift.size else 0.4
+
+        area = self._polygon_area(self._board_corners_from_homography(H))
+        image_area = max(float(image_shape[0] * image_shape[1]), 1.0)
+        area_ratio = area / image_area
+        area_score = np.clip((area_ratio - 0.03) / 0.20, 0.0, 1.0)
+
+        confidence = (
+            np.clip(detector_score, 0.0, 1.0) * 0.35
+            + residual_score * 0.25
+            + observed_score * 0.25
+            + temporal_score * 0.10
+            + float(area_score) * 0.05
+        )
+        return float(np.clip(confidence, 0.0, 1.0))
 
     def _marker_anchors(self, width, height):
         if self.last_marker_centers is not None:
@@ -477,6 +582,17 @@ class PlaneTracker:
         key = lambda point: point[0] - point[1]
         return np.asarray(min(candidates, key=key), dtype=np.float32)
 
+    def _quadrant_corner_slot(self, center, frame_center):
+        left = center[0] < frame_center[0]
+        top = center[1] < frame_center[1]
+        if left and top:
+            return "tl"
+        if (not left) and top:
+            return "tr"
+        if (not left) and (not top):
+            return "br"
+        return "bl"
+
     def _candidate_corner_slot(self, center, frame_center):
         if self.last_marker_centers is not None:
             last = np.asarray(self.last_marker_centers, dtype=np.float32)
@@ -588,15 +704,19 @@ class PlaneTracker:
             dtype=np.float32,
         )
 
-    def _stabilize_corners(self, corners):
+    def _stabilize_corners(self, corners, confidence=1.0):
+        corners = corners.astype(np.float32)
         if self.last_corners is None:
-            return corners.astype(np.float32)
+            return corners
 
         displacement = np.linalg.norm(corners - self.last_corners, axis=1).mean()
-        if displacement > 90.0:
-            return corners.astype(np.float32)
+        if displacement > 90.0 and confidence >= 0.72:
+            return corners
+        if displacement > 140.0:
+            return corners
 
-        alpha = self.corner_smoothing
+        confidence = float(np.clip(confidence, 0.0, 1.0))
+        alpha = np.clip(self.corner_smoothing * (0.45 + confidence), 0.12, 0.70)
         return (self.last_corners * (1.0 - alpha) + corners * alpha).astype(np.float32)
 
     def _track_last_corners(self, gray):
