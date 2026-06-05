@@ -18,7 +18,8 @@ KEY_TO_LABEL = {
     ord("1"): "Fist",
     ord("2"): "Open_Palm",
     ord("3"): "V_Sign",
-    ord("4"): "OK_Sign",
+    ord("4"): "Gun_Sign",
+    ord("5"): "OK_Sign",
 }
 
 
@@ -66,7 +67,7 @@ def save_crop(dataset_dir, label, crop):
 def draw_overlay(frame, active_label, counts, crop):
     lines = [
         "PNG/CNN dataset capture",
-        "1: Fist | 2: Open_Palm | 3: V_Sign | 4: OK_Sign | Q: quit",
+        "1: Fist | 2: Open_Palm | 3: V_Sign | 4: Gun_Sign | 5: OK_Sign | Q: quit",
         f"Last saved: {active_label or '-'}",
         "Samples: " + "  ".join(f"{label}: {counts.get(label, 0)}" for label in GESTURE_CLASSES),
     ]

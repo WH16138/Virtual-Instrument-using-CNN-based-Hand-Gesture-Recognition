@@ -4,102 +4,119 @@ from game.battle_system import BattleState
 
 
 class HUD:
-    """OpenCV HUD drawing helpers."""
+    """Minimal OpenCV HUD for gameplay, setup guidance before battle."""
 
     @staticmethod
-    def _panel(frame, x, y, w, h, color=(18, 18, 18), alpha=0.72):
+    def _panel(frame, x, y, w, h, color=(12, 12, 18), alpha=0.62, border=(92, 86, 68)):
         overlay = frame.copy()
         cv2.rectangle(overlay, (x, y), (x + w, y + h), color, -1)
         cv2.addWeighted(overlay, alpha, frame, 1.0 - alpha, 0, frame)
-        cv2.rectangle(frame, (x, y), (x + w, y + h), (80, 80, 80), 1)
+        cv2.rectangle(frame, (x, y), (x + w, y + h), border, 1, cv2.LINE_AA)
 
     @staticmethod
-    def _text(frame, text, x, y, scale=0.55, color=(255, 255, 255), thickness=1):
-        cv2.putText(frame, text, (x, y), cv2.FONT_HERSHEY_SIMPLEX, scale, color, thickness, cv2.LINE_AA)
+    def _text(frame, text, x, y, scale=0.5, color=(240, 240, 240), thickness=1):
+        cv2.putText(frame, str(text), (x, y), cv2.FONT_HERSHEY_SIMPLEX, scale, color, thickness, cv2.LINE_AA)
 
     @staticmethod
-    def _hp_bar(frame, label, hp, max_hp, x, y, w, color):
-        h = 22
-        ratio = max(0.0, min(1.0, hp / max(max_hp, 1)))
-        cv2.rectangle(frame, (x, y), (x + w, y + h), (65, 65, 65), -1)
+    def _bar(frame, x, y, w, h, ratio, color, label):
+        ratio = max(0.0, min(1.0, ratio))
+        cv2.rectangle(frame, (x, y), (x + w, y + h), (38, 36, 44), -1)
         cv2.rectangle(frame, (x, y), (x + int(w * ratio), y + h), color, -1)
-        cv2.rectangle(frame, (x, y), (x + w, y + h), (230, 230, 230), 1)
-        HUD._text(frame, f"{label} {hp}/{max_hp}", x, y - 8, 0.55, (255, 255, 255), 1)
+        cv2.rectangle(frame, (x, y), (x + w, y + h), (205, 190, 140), 1, cv2.LINE_AA)
+        HUD._text(frame, label, x + 6, y + h - 4, 0.38, (250, 246, 226), 1)
 
     @staticmethod
-    def draw_hp_bar(frame, player, enemy, x_offset=12, y_offset=62):
-        HUD._panel(frame, x_offset - 8, y_offset - 40, 270, 128)
-        HUD._hp_bar(frame, "PLAYER", player.hp, player.max_hp, x_offset, y_offset, 230, (35, 95, 235))
-        HUD._hp_bar(frame, "ENEMY", enemy.hp, enemy.max_hp, x_offset, y_offset + 62, 230, (50, 190, 70))
-        return frame
+    def draw_game_layer(frame, game_state, gesture_info, plane_registered, game_started):
+        if game_started:
+            return HUD._draw_minimal_game_hud(frame, game_state)
+        return HUD._draw_setup_panel(frame, plane_registered)
 
     @staticmethod
-    def draw_game_state(frame, game_state, x_offset=12, y_offset=205):
-        state = game_state["battle_state"]
-        state_names = {
-            BattleState.WAITING: "WAITING",
-            BattleState.PLAYER_TURN: "PLAYER TURN",
-            BattleState.ENEMY_TURN: "ENEMY TURN",
-            BattleState.VICTORY: "VICTORY",
-            BattleState.DEFEAT: "DEFEAT",
-        }
-        state_colors = {
-            BattleState.PLAYER_TURN: (0, 220, 255),
-            BattleState.ENEMY_TURN: (0, 150, 255),
-            BattleState.VICTORY: (60, 230, 80),
-            BattleState.DEFEAT: (60, 60, 255),
-        }
-        state_name = state_names.get(state, "UNKNOWN")
-        state_color = state_colors.get(state, (235, 235, 235))
-        delay = game_state.get("turn_delay_remaining", 0.0)
-        can_act = game_state.get("can_act", False)
+    def _draw_minimal_game_hud(frame, game_state):
+        height, width = frame.shape[:2]
+        panel_w = min(460, width - 16)
+        HUD._panel(frame, 8, 8, panel_w, 74, alpha=0.58)
 
-        HUD._panel(frame, x_offset - 8, y_offset - 36, 310, 120)
-        HUD._text(frame, f"TURN {game_state.get('turn_count', 0)}", x_offset, y_offset - 12, 0.55, (210, 210, 210), 1)
-        HUD._text(frame, state_name, x_offset, y_offset + 18, 0.82, state_color, 2)
-
-        if state == BattleState.PLAYER_TURN:
-            prompt = "Action ready" if can_act else f"Ready in {delay:.1f}s"
+        wave = game_state.get("wave", 0)
+        best = game_state.get("best_wave", 0)
+        phase = game_state.get("phase_label", "")
+        state = game_state.get("battle_state")
+        if state == BattleState.PLAYER_TURN and game_state.get("can_act"):
+            phase = "Choose an action"
         elif state == BattleState.ENEMY_TURN:
-            prompt = f"Enemy acts in {delay:.1f}s"
-        else:
-            prompt = game_state.get("last_action") or "Press SPACE after registering A4"
-        HUD._text(frame, prompt, x_offset, y_offset + 48, 0.55, (255, 255, 255), 1)
+            preview = game_state.get("enemy_preview", {})
+            phase = f"Enemy: {preview.get('action', '...')}" if preview.get("active") else "Enemy turn"
 
-        if game_state.get("last_action"):
-            damage = game_state.get("last_damage", 0)
-            suffix = f" | Damage {damage}" if damage > 0 else ""
-            HUD._text(frame, f"{game_state['last_action']}{suffix}", x_offset, y_offset + 76, 0.5, (255, 230, 120), 1)
+        HUD._text(frame, f"Wave {wave}  Best {best}", 20, 30, 0.58, (255, 245, 210), 2)
+        HUD._text(frame, phase, 190, 30, 0.52, (120, 230, 255), 1)
+
+        player = game_state.get("player", {})
+        enemy = game_state.get("enemy", {})
+        HUD._bar(
+            frame,
+            20,
+            50,
+            180,
+            14,
+            player.get("hp", 0) / max(player.get("max_hp", 1), 1),
+            (60, 185, 85),
+            f"HP {player.get('hp', 0)}/{player.get('max_hp', 1)}",
+        )
+        HUD._bar(
+            frame,
+            218,
+            50,
+            218,
+            14,
+            enemy.get("hp", 0) / max(enemy.get("max_hp", 1), 1),
+            enemy.get("color", (70, 70, 210)),
+            f"{enemy.get('name', 'Enemy')} {enemy.get('hp', 0)}/{enemy.get('max_hp', 1)}",
+        )
+
+        if state == BattleState.DEFEAT:
+            text = f"DEFEAT - BEST WAVE {game_state.get('best_wave', 0)}"
+            HUD._panel(frame, width // 2 - 190, height // 2 - 34, 380, 68, alpha=0.72, border=(80, 80, 255))
+            HUD._text(frame, text, width // 2 - 160, height // 2 + 8, 0.72, (95, 95, 255), 2)
+        elif state == BattleState.WAVE_CLEAR:
+            HUD._panel(frame, width // 2 - 140, 96, 280, 48, alpha=0.60, border=(90, 230, 130))
+            HUD._text(frame, "WAVE CLEAR", width // 2 - 112, 128, 0.78, (90, 230, 130), 2)
+        elif state == BattleState.WAVE_INTRO:
+            HUD._panel(frame, width // 2 - 190, 96, 380, 48, alpha=0.58, border=(120, 230, 255))
+            HUD._text(frame, game_state.get("phase_label", "Wave incoming"), width // 2 - 170, 128, 0.62, (120, 230, 255), 2)
 
         return frame
 
     @staticmethod
-    def draw_gesture_recognition(frame, gesture_info, x_offset=12, y_offset=350):
-        gesture = gesture_info.get("gesture", "Unknown")
-        confidence = gesture_info.get("confidence", 0.0)
-        smoothed_gesture = gesture_info.get("smoothed_gesture", "Unknown")
-        color = (0, 230, 90) if confidence > 0.6 else (0, 170, 255)
-
-        HUD._panel(frame, x_offset - 8, y_offset - 34, 310, 76)
-        HUD._text(frame, f"Gesture {gesture}  {confidence:.2f}", x_offset, y_offset - 8, 0.52, color, 1)
-        HUD._text(frame, f"Stable {smoothed_gesture}", x_offset, y_offset + 22, 0.58, (255, 230, 120), 1)
+    def _draw_setup_panel(frame, plane_registered):
+        height, width = frame.shape[:2]
+        w, h = 520, 108
+        x, y = max(12, width // 2 - w // 2), max(64, height // 2 - h // 2)
+        HUD._panel(frame, x, y, w, h, alpha=0.76)
+        if not plane_registered:
+            title = "Find the dungeon board"
+            detail = "Place the marked A4 in view, then press SPACE to register."
+            color = (80, 190, 255)
+        else:
+            title = "Board registered"
+            detail = "Show OK sign or press SPACE to open the dungeon."
+            color = (90, 230, 130)
+        HUD._text(frame, title, x + 18, y + 38, 0.78, color, 2)
+        HUD._text(frame, detail, x + 18, y + 74, 0.52, (235, 235, 235), 1)
+        HUD._text(frame, "[SPACE] register/start   [D] debug   [R] reset   [Q] quit", 18, height - 16, 0.5, (230, 230, 230), 1)
         return frame
 
     @staticmethod
     def draw_instructions(frame, game_state):
-        height, width = frame.shape[:2]
-        state = game_state["battle_state"]
+        return frame
 
-        HUD._panel(frame, 8, 8, 440, 34, alpha=0.6)
-        HUD._text(frame, "VisionQuest - A4 Gesture Battle", 18, 32, 0.65, (255, 255, 255), 2)
+    @staticmethod
+    def draw_hp_bar(frame, player, enemy, x_offset=12, y_offset=62):
+        return frame
 
-        HUD._panel(frame, 8, height - 38, 520, 30, alpha=0.62)
-        HUD._text(frame, "[SPACE] register/start fallback   [R] reset   [Q] quit", 18, height - 16, 0.5, (230, 230, 230), 1)
+    @staticmethod
+    def draw_game_state(frame, game_state, x_offset=12, y_offset=205):
+        return frame
 
-        if state in (BattleState.VICTORY, BattleState.DEFEAT):
-            label = "VICTORY" if state == BattleState.VICTORY else "DEFEAT"
-            color = (60, 230, 80) if state == BattleState.VICTORY else (60, 60, 255)
-            HUD._panel(frame, width // 2 - 170, height // 2 - 50, 340, 100, alpha=0.78)
-            HUD._text(frame, label, width // 2 - 95, height // 2 + 10, 1.15, color, 3)
-
+    @staticmethod
+    def draw_gesture_recognition(frame, gesture_info, x_offset=12, y_offset=350):
         return frame

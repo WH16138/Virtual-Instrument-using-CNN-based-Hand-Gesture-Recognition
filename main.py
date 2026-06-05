@@ -1,23 +1,30 @@
 import cv2
 import numpy as np
+import time
 
 from ar.ar_renderer import ARRenderer
+from ar.homography import HomographyEstimator
 from ar.plane_tracker import PlaneTracker
-from game.battle_system import BattleState
 from game.game_manager import GameManager
 from network.frame_receiver import FrameReceiver
 from network.websocket_server import WebSocketFrameServer
+from ui.action_cards import ActionCardRenderer
+from ui.damage_text import FloatingTextManager
 from ui.hud import HUD
 from vision.gesture_detector import GestureDetector
 from vision.hand_tracker import HandTracker
 
 
-FRAME_STALE_SECONDS = 2.0
+FRAME_STALE_SECONDS = 5.0
+FRAME_STALE_GRACE_SECONDS = 2.5
 VISION_INTERVAL_FRAMES = 2
 PLANE_PREVIEW_INTERVAL_FRAMES = 3
 GESTURE_CONFIDENCE_THRESHOLD = 0.6
 START_GESTURE = "OK_Sign"
 START_GESTURE_HOLD_FRAMES = 12
+WINDOW_NAME = "VisionQuest"
+DISPLAY_WIDTH = 1120
+DISPLAY_HEIGHT = 760
 
 
 UNKNOWN_GESTURE = {
@@ -43,6 +50,40 @@ def draw_wrapped_text(frame, text, origin, font_scale, color, thickness, max_cha
         line = text[start : start + max_chars]
         cv2.putText(frame, line, (x, y), cv2.FONT_HERSHEY_SIMPLEX, font_scale, color, thickness)
         y += line_height
+
+
+def configure_display_window(window_name):
+    cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+    cv2.resizeWindow(window_name, DISPLAY_WIDTH, DISPLAY_HEIGHT)
+
+
+def get_display_size(window_name):
+    try:
+        _, _, width, height = cv2.getWindowImageRect(window_name)
+    except cv2.error:
+        return DISPLAY_WIDTH, DISPLAY_HEIGHT
+    if width <= 0 or height <= 0:
+        return DISPLAY_WIDTH, DISPLAY_HEIGHT
+    return width, height
+
+
+def prepare_display_frame(frame, target_width=None, target_height=None):
+    target_width = DISPLAY_WIDTH if target_width is None else int(target_width)
+    target_height = DISPLAY_HEIGHT if target_height is None else int(target_height)
+    frame_height, frame_width = frame.shape[:2]
+    if frame_width <= 0 or frame_height <= 0 or target_width <= 0 or target_height <= 0:
+        return frame
+
+    scale = min(target_width / float(frame_width), target_height / float(frame_height))
+    resized_width = int(round(frame_width * scale))
+    resized_height = int(round(frame_height * scale))
+    resized = cv2.resize(frame, (resized_width, resized_height), interpolation=cv2.INTER_LINEAR)
+
+    canvas = np.zeros((target_height, target_width, 3), dtype=np.uint8)
+    x1 = max((target_width - resized_width) // 2, 0)
+    y1 = max((target_height - resized_height) // 2, 0)
+    canvas[y1 : y1 + resized_height, x1 : x1 + resized_width] = resized
+    return canvas
 
 
 def draw_waiting_frame(frame_receiver, page_url=None, qr_image=None):
@@ -165,26 +206,34 @@ def draw_a4_detection_highlight(frame, tracking_result, plane_registered):
             marker_observed = np.asarray(marker_observed, dtype=bool)
         for point, observed in zip(marker_points, marker_observed):
             marker_color = (0, 0, 255) if observed else (0, 165, 255)
-            cv2.circle(frame, tuple(point), 9, marker_color, 2, cv2.LINE_AA)
-            cv2.circle(frame, tuple(point), 2, (255, 255, 255), -1, cv2.LINE_AA)
-            if not observed:
+            if observed:
+                cv2.circle(frame, tuple(point), 9, marker_color, 2, cv2.LINE_AA)
+                cv2.circle(frame, tuple(point), 2, (255, 255, 255), -1, cv2.LINE_AA)
+            else:
                 cv2.line(frame, (point[0] - 6, point[1] - 6), (point[0] + 6, point[1] + 6), marker_color, 1, cv2.LINE_AA)
                 cv2.line(frame, (point[0] - 6, point[1] + 6), (point[0] + 6, point[1] - 6), marker_color, 1, cv2.LINE_AA)
 
     confidence = tracking_result.get("homography_confidence", tracking_result.get("track_score", 0.0))
+    reprojection_error = tracking_result.get("reprojection_error")
+    error_text = f", err {reprojection_error:.1f}px" if reprojection_error is not None else ""
+    plane_size = tracking_result.get("plane_size")
+    size_text = ""
+    if plane_size is not None:
+        orientation = "landscape" if plane_size[0] > plane_size[1] else "portrait"
+        size_text = f", {orientation}"
     matched_points = tracking_result.get("matched_points", 0)
     if stale:
         text = "A4 temporarily occluded - holding last corners"
     elif tracking_result.get("tracking_method") == "corner_marks":
-        text = f"A4 corner marks detected ({matched_points}/4, H {confidence:.2f})"
+        text = f"A4 corner marks detected ({matched_points}/4, H {confidence:.2f}{error_text}{size_text})"
     elif tracking_result.get("tracking_method") == "redetect_corner_marks":
-        text = f"A4 re-detected ({matched_points}/4, H {confidence:.2f})"
+        text = f"A4 re-detected ({matched_points}/4, H {confidence:.2f}{error_text}{size_text})"
     elif tracking_result.get("tracking_method") == "marker_track":
         score = tracking_result.get("track_score", 0.0)
         text = f"A4 marker tracking ({score:.2f}, H {confidence:.2f})"
     elif tracking_result.get("tracking_method") == "optical_flow":
         score = tracking_result.get("track_score", 0.0)
-        text = f"A4 optical flow tracking ({matched_points}/4, H {confidence:.2f})"
+        text = f"A4 optical flow tracking ({matched_points}/4, H {confidence:.2f}{error_text})"
     elif tracking_result.get("tracking_method") == "patch_track":
         score = tracking_result.get("track_score", 0.0)
         text = f"A4 tracked from previous frame ({score:.2f}, H {confidence:.2f})"
@@ -200,8 +249,33 @@ def choose_best_gesture(left_info, right_info):
     return right_info if right_info["confidence"] > left_info["confidence"] else left_info
 
 
+def should_show_tracking_attention(tracking_result):
+    if not tracking_result or not tracking_result.get("success"):
+        return True
+    if tracking_result.get("stale", False):
+        return True
+    if int(tracking_result.get("matched_points", 0) or 0) < 4:
+        return True
+
+    marker_observed = tracking_result.get("marker_observed")
+    if marker_observed is not None and not bool(np.all(np.asarray(marker_observed, dtype=bool))):
+        return True
+
+    confidence = float(tracking_result.get("homography_confidence", tracking_result.get("track_score", 1.0)) or 0.0)
+    if confidence < 0.55:
+        return True
+
+    reprojection_error = tracking_result.get("reprojection_error")
+    if reprojection_error is not None and float(reprojection_error) > 8.0:
+        return True
+
+    return False
+
+
 def main():
     print("Starting VisionQuest...")
+    cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_NORMAL)
+    configure_display_window(WINDOW_NAME)
 
     frame_receiver = FrameReceiver()
     websocket_server = WebSocketFrameServer(frame_receiver)
@@ -215,11 +289,14 @@ def main():
     plane_tracker = PlaneTracker()
     ar_renderer = ARRenderer(plane_size=(210, 297))
     game_manager = GameManager()
+    floating_text = FloatingTextManager()
+    action_cards = ActionCardRenderer()
     game_manager.player_pos = (105, 230)
     game_manager.enemy_pos = (105, 70)
 
     game_started = False
     plane_registered = False
+    debug_mode = False
     start_gesture_counter = 0
 
     frame_count = 0
@@ -229,25 +306,28 @@ def main():
     last_gesture_info_right = dict(UNKNOWN_GESTURE)
     last_gesture_info = dict(UNKNOWN_GESTURE)
     current_tracking_result = {"success": False, "H": None, "corners": None}
+    freshness_grace_until = 0.0
 
     print("Ready.")
     print("Open the QR URL on your phone.")
-    print("Controls: SPACE=register centered A4 board/start fallback, R=reset, Q=quit")
+    print("Controls: SPACE=register centered A4 board/start fallback, D=debug overlays, R=reset, Q=quit")
 
     try:
         while True:
+            now = time.monotonic()
             frame = frame_receiver.get_latest_frame()
-            if frame is None or not frame_receiver.is_frame_fresh(FRAME_STALE_SECONDS):
+            frame_is_fresh = frame_receiver.is_frame_fresh(FRAME_STALE_SECONDS)
+            in_freshness_grace = frame is not None and now < freshness_grace_until
+            if frame is None or (not frame_is_fresh and not in_freshness_grace):
                 waiting_frame = draw_waiting_frame(frame_receiver, websocket_server.page_url, qr_image)
-                cv2.imshow("VisionQuest", waiting_frame)
+                display_width, display_height = get_display_size(WINDOW_NAME)
+                cv2.imshow(WINDOW_NAME, prepare_display_frame(waiting_frame, display_width, display_height))
                 if cv2.waitKey(1) & 0xFF == ord("q"):
                     break
                 continue
 
             frame_count += 1
             #frame = cv2.flip(frame, 1)
-            height, width = frame.shape[:2]
-
             fps = cv2.getTickFrequency() / max(cv2.getTickCount() - fps_clock, 1)
             fps_clock = cv2.getTickCount()
 
@@ -258,14 +338,21 @@ def main():
                 last_gesture_info = choose_best_gesture(last_gesture_info_left, last_gesture_info_right)
 
             hand_detection = last_hand_detection
-            gesture_info_left = last_gesture_info_left
-            gesture_info_right = last_gesture_info_right
             gesture_info = last_gesture_info
 
             should_update_plane = plane_registered or frame_count % PLANE_PREVIEW_INTERVAL_FRAMES == 0
             if should_update_plane:
-                current_tracking_result = plane_tracker.track_plane(frame)
+                current_tracking_result = plane_tracker.track_plane(
+                    frame,
+                    hand_landmarks=hand_detection.get("hand_landmarks"),
+                )
             H = current_tracking_result["H"] if current_tracking_result["success"] else None
+            if H is not None:
+                plane_size = current_tracking_result.get("plane_size")
+                if plane_size is not None:
+                    ar_renderer.set_plane_size(plane_size)
+                    game_manager.player_pos = (ar_renderer.plane_width * 0.50, ar_renderer.plane_height * 0.77)
+                    game_manager.enemy_pos = (ar_renderer.plane_width * 0.50, ar_renderer.plane_height * 0.24)
 
             if plane_registered and not game_started:
                 start_ok = (
@@ -287,12 +374,25 @@ def main():
                 if start_gesture_counter >= START_GESTURE_HOLD_FRAMES:
                     game_manager.start_game()
                     game_started = True
+                    floating_text.reset()
+                    action_cards.reset()
                     start_gesture_counter = 0
+                    freshness_grace_until = time.monotonic() + FRAME_STALE_GRACE_SECONDS
                     print("Game started by OK sign.")
 
             if game_started:
-                game_manager.process_gesture(gesture_info)
+                action_performed = game_manager.process_gesture(gesture_info)
+                if action_performed:
+                    gesture_detector.reset()
+                    last_gesture_info_left = dict(UNKNOWN_GESTURE)
+                    last_gesture_info_right = dict(UNKNOWN_GESTURE)
+                    last_gesture_info = dict(UNKNOWN_GESTURE)
+                    gesture_info = last_gesture_info
                 game_manager.update()
+
+            game_state = game_manager.get_game_state()
+            events = game_manager.consume_events() if game_started else []
+            floating_text.add_from_events(events, game_manager.player_pos, game_manager.enemy_pos)
 
             if H is not None and game_started:
                 frame = ar_renderer.render_battlefield(
@@ -300,46 +400,69 @@ def main():
                     H,
                     game_manager.player_pos,
                     game_manager.enemy_pos,
+                    game_state=game_state,
                 )
+                frame = action_cards.draw(
+                    frame,
+                    H,
+                    (ar_renderer.plane_width, ar_renderer.plane_height),
+                    game_state,
+                    events,
+                    game_manager.enemy_pos,
+                )
+                frame = floating_text.draw(frame, H, HomographyEstimator.transform_point)
 
-            draw_a4_detection_highlight(frame, current_tracking_result, plane_registered)
+            show_tracking_overlay = (
+                debug_mode
+                or not game_started
+                or should_show_tracking_attention(current_tracking_result)
+            )
+            if show_tracking_overlay:
+                draw_a4_detection_highlight(frame, current_tracking_result, plane_registered)
 
             frame = hand_tracker.draw_hands(frame, hand_detection)
 
-            if game_started:
-                game_state = game_manager.get_game_state()
-                frame = HUD.draw_hp_bar(frame, game_manager.player, game_manager.enemy)
-                frame = HUD.draw_game_state(frame, game_state)
-                frame = HUD.draw_gesture_recognition(frame, gesture_info)
+            frame = HUD.draw_game_layer(frame, game_state, gesture_info, plane_registered, game_started)
+            if debug_mode or not game_started:
+                draw_runtime_diagnostics(frame, fps, hand_detection, plane_registered, game_started)
 
-            current_state = game_manager.get_game_state() if game_started else {"battle_state": BattleState.WAITING}
-            frame = HUD.draw_instructions(frame, current_state)
-            draw_runtime_diagnostics(frame, fps, hand_detection, plane_registered, game_started)
-
-            cv2.imshow("VisionQuest", frame)
+            display_width, display_height = get_display_size(WINDOW_NAME)
+            cv2.imshow(WINDOW_NAME, prepare_display_frame(frame, display_width, display_height))
             key = cv2.waitKey(1) & 0xFF
 
             if key == ord("q"):
                 break
 
+            if key == ord("d"):
+                debug_mode = not debug_mode
+                print(f"Debug overlays {'enabled' if debug_mode else 'disabled'}.")
+
             if key == ord(" "):
                 if not plane_registered:
                     if plane_tracker.register_tracking_result(current_tracking_result):
                         plane_registered = True
+                        freshness_grace_until = time.monotonic() + FRAME_STALE_GRACE_SECONDS
                         print("A4 board registered. Press SPACE again to start the game.")
                     else:
                         print("A4 board registration failed. Center a white A4 sheet in the camera view.")
                 elif not game_started:
                     game_manager.start_game()
                     game_started = True
+                    floating_text.reset()
+                    action_cards.reset()
                     start_gesture_counter = 0
+                    freshness_grace_until = time.monotonic() + FRAME_STALE_GRACE_SECONDS
                     print("Game started by keyboard fallback.")
 
             if key == ord("r"):
                 game_manager.reset_game()
+                floating_text.reset()
+                action_cards.reset()
                 game_started = False
                 plane_registered = False
+                debug_mode = False
                 start_gesture_counter = 0
+                freshness_grace_until = 0.0
                 print("Game reset.")
     finally:
         websocket_server.stop()

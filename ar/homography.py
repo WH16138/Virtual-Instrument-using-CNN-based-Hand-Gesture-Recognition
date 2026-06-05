@@ -68,7 +68,7 @@ class HomographyEstimator:
         if H is None:
             return frame
 
-        width, height = plane_size
+        width, height = (int(round(plane_size[0])), int(round(plane_size[1])))
 
         for x in range(0, width + 1, grid_size):
             p1 = HomographyEstimator.transform_point((x, 0), H)

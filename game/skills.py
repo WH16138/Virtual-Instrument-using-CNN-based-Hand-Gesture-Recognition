@@ -1,10 +1,11 @@
 class Skill:
     """Combat skill metadata."""
 
-    def __init__(self, name, damage, description):
+    def __init__(self, name, damage, description, action):
         self.name = name
         self.damage = damage
         self.description = description
+        self.action = action
 
 
 class SkillManager:
@@ -12,9 +13,10 @@ class SkillManager:
 
     def __init__(self):
         self.skills = {
-            "Fist": Skill("Attack", damage=10, description="Basic punch attack"),
-            "Open_Palm": Skill("Defend", damage=0, description="Raise defense for the next hit"),
-            "V_Sign": Skill("Power Attack", damage=20, description="Stronger gesture attack"),
+            "Fist": Skill("Strike", damage=12, description="Close punch strike", action="Strike"),
+            "Open_Palm": Skill("Guard", damage=0, description="Block the next incoming hit", action="Guard"),
+            "V_Sign": Skill("Arcane Shot", damage=22, description="Focused ranged shot", action="Shot"),
+            "Gun_Sign": Skill("Arcane Shot", damage=22, description="Focused ranged shot", action="Shot"),
         }
 
     def get_skill(self, gesture):
@@ -27,9 +29,5 @@ class SkillManager:
         OK_Sign is intentionally not mapped here. It is reserved for starting
         the game and should not consume a battle turn.
         """
-        action_map = {
-            "Fist": "Attack",
-            "Open_Palm": "Defend",
-            "V_Sign": "Skill",
-        }
-        return action_map.get(gesture)
+        skill = self.get_skill(gesture)
+        return skill.action if skill is not None else None
