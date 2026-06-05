@@ -168,6 +168,9 @@ def draw_a4_detection_highlight(frame, tracking_result, plane_registered):
     elif tracking_result.get("tracking_method") == "marker_track":
         score = tracking_result.get("track_score", 0.0)
         text = f"A4 marker tracking ({score:.2f})"
+    elif tracking_result.get("tracking_method") == "optical_flow":
+        score = tracking_result.get("track_score", 0.0)
+        text = f"A4 optical flow tracking ({score:.2f})"
     elif tracking_result.get("tracking_method") == "patch_track":
         score = tracking_result.get("track_score", 0.0)
         text = f"A4 tracked from previous frame ({score:.2f})"
