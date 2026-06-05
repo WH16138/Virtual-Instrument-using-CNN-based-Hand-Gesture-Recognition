@@ -22,15 +22,16 @@ class ARRenderer:
         self.plane_width = float(plane_size[0])
         self.plane_height = float(plane_size[1])
 
-    def render_battlefield(self, frame, H, player_pos, enemy_pos, game_state=None):
+    def render_battlefield(self, frame, H, player_pos, enemy_pos, game_state=None, show_floor_mesh=True):
         if H is None:
             return frame
 
         self._update_camera_estimate(H, frame.shape)
         pose = self._pose_from_homography(H, frame.shape)
 
-        self._draw_floor(frame, H)
-        self._draw_grid(frame, H, grid_size=30)
+        if show_floor_mesh:
+            self._draw_floor(frame, H)
+            self._draw_grid(frame, H, grid_size=30)
 
         enemy_state = (game_state or {}).get("enemy", {})
         enemy_color = tuple(enemy_state.get("color", (30, 30, 230)))
@@ -338,18 +339,15 @@ class ARRenderer:
         camera_matrix = self._camera_matrix(frame_shape)
         dist_coeffs = np.zeros((4, 1), dtype=np.float64)
 
-        try:
-            success, rvec, tvec = cv2.solvePnP(
-                object_points,
-                image_points.astype(np.float64),
-                camera_matrix,
-                dist_coeffs,
-                flags=cv2.SOLVEPNP_ITERATIVE,
-            )
-        except cv2.error:
+        pose_solution = self._solve_planar_pose(
+            object_points,
+            image_points.astype(np.float64),
+            camera_matrix,
+            dist_coeffs,
+        )
+        if pose_solution is None:
             return None
-        if not success:
-            return None
+        rvec, tvec = pose_solution
 
         z_sign = self._choose_height_sign(H, rvec, tvec, camera_matrix, dist_coeffs)
         return {
@@ -359,6 +357,52 @@ class ARRenderer:
             "dist_coeffs": dist_coeffs,
             "z_sign": z_sign,
         }
+
+    def _solve_planar_pose(self, object_points, image_points, camera_matrix, dist_coeffs):
+        candidates = []
+
+        try:
+            result = cv2.solvePnPGeneric(
+                object_points,
+                image_points,
+                camera_matrix,
+                dist_coeffs,
+                flags=cv2.SOLVEPNP_IPPE,
+            )
+            if result and bool(result[0]):
+                for rvec, tvec in zip(result[1], result[2]):
+                    candidates.append((rvec, tvec))
+        except cv2.error:
+            candidates = []
+
+        if not candidates:
+            try:
+                success, rvec, tvec = cv2.solvePnP(
+                    object_points,
+                    image_points,
+                    camera_matrix,
+                    dist_coeffs,
+                    flags=cv2.SOLVEPNP_ITERATIVE,
+                )
+            except cv2.error:
+                return None
+            if not success:
+                return None
+            candidates.append((rvec, tvec))
+
+        best_pose = None
+        best_error = None
+        for rvec, tvec in candidates:
+            try:
+                projected, _ = cv2.projectPoints(object_points, rvec, tvec, camera_matrix, dist_coeffs)
+            except cv2.error:
+                continue
+            error = float(np.linalg.norm(projected.reshape(-1, 2) - image_points.reshape(-1, 2), axis=1).mean())
+            if best_error is None or error < best_error:
+                best_error = error
+                best_pose = (rvec, tvec)
+
+        return best_pose
 
     def _project_raised_points(self, points, height, pose):
         object_points = np.asarray(

@@ -88,21 +88,21 @@ class HUD:
 
     @staticmethod
     def _draw_setup_panel(frame, plane_registered):
-        height, width = frame.shape[:2]
-        w, h = 520, 108
-        x, y = max(12, width // 2 - w // 2), max(64, height // 2 - h // 2)
-        HUD._panel(frame, x, y, w, h, alpha=0.76)
+        height, _ = frame.shape[:2]
+        w, h = 430, 74
+        x, y = 10, 10
+        HUD._panel(frame, x, y, w, h, alpha=0.56)
         if not plane_registered:
-            title = "Find the dungeon board"
-            detail = "Place the marked A4 in view, then press SPACE to register."
+            title = "Board setup"
+            detail = "Place marked A4 in view, then press SPACE."
             color = (80, 190, 255)
         else:
             title = "Board registered"
-            detail = "Show OK sign or press SPACE to open the dungeon."
+            detail = "Show OK sign or press SPACE to start."
             color = (90, 230, 130)
-        HUD._text(frame, title, x + 18, y + 38, 0.78, color, 2)
-        HUD._text(frame, detail, x + 18, y + 74, 0.52, (235, 235, 235), 1)
-        HUD._text(frame, "[SPACE] register/start   [D] debug   [R] reset   [Q] quit", 18, height - 16, 0.5, (230, 230, 230), 1)
+        HUD._text(frame, title, x + 14, y + 28, 0.58, color, 2)
+        HUD._text(frame, detail, x + 14, y + 54, 0.44, (235, 235, 235), 1)
+        HUD._text(frame, "[SPACE] start/register  [D] debug  [R] reset  [Q] quit", 18, height - 16, 0.42, (230, 230, 230), 1)
         return frame
 
     @staticmethod

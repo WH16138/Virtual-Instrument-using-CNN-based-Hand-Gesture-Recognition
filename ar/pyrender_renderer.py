@@ -52,7 +52,7 @@ class PyrenderModelRenderer:
             return False
 
         scene = pyrender.Scene(bg_color=[0.0, 0.0, 0.0, 0.0], ambient_light=[0.35, 0.35, 0.35, 1.0])
-        model_pose = self._model_pose(board_pos, size, height_offset, pose.get("z_sign", 1.0), yaw_degrees)
+        model_pose = self._model_pose(board_pos, size, height_offset, yaw_degrees)
         for mesh in meshes:
             scene.add(mesh, pose=model_pose)
 
@@ -197,7 +197,7 @@ class PyrenderModelRenderer:
         self.reported_failures.add(key)
         print(f"[PyrenderModelRenderer] {message}")
 
-    def _model_pose(self, board_pos, size, height_offset, z_sign, yaw_degrees=0.0):
+    def _model_pose(self, board_pos, size, height_offset, yaw_degrees=0.0):
         yaw = np.deg2rad(float(yaw_degrees))
         cos_yaw = float(np.cos(yaw))
         sin_yaw = float(np.sin(yaw))
@@ -210,13 +210,13 @@ class PyrenderModelRenderer:
             ],
             dtype=np.float64,
         )
-        scale_matrix = np.diag([size, size, size * z_sign]).astype(np.float64)
+        scale_matrix = np.diag([size, size, size]).astype(np.float64)
 
         pose = np.eye(4, dtype=np.float64)
         pose[:3, :3] = rotation_z @ scale_matrix
         pose[0, 3] = float(board_pos[0])
         pose[1, 3] = float(board_pos[1])
-        pose[2, 3] = float(height_offset) * z_sign
+        pose[2, 3] = float(height_offset)
         return pose
 
     def _camera_pose_from_solvepnp(self, rvec, tvec):

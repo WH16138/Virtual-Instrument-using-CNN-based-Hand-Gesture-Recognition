@@ -117,8 +117,8 @@ class ActionCardRenderer:
 
     def _draw_progress_on_card(self, frame, quad, progress, color):
         progress = max(0.0, min(1.0, progress))
-        left = quad[3].astype(np.float32)
-        right = quad[2].astype(np.float32)
+        left = quad[0].astype(np.float32)
+        right = quad[1].astype(np.float32)
         end = left + (right - left) * progress
         cv2.line(frame, tuple(left.astype(int)), tuple(right.astype(int)), (45, 45, 55), 5, cv2.LINE_AA)
         cv2.line(frame, tuple(left.astype(int)), tuple(end.astype(int)), color, 5, cv2.LINE_AA)

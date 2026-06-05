@@ -18,6 +18,7 @@ from vision.hand_tracker import HandTracker
 FRAME_STALE_SECONDS = 5.0
 FRAME_STALE_GRACE_SECONDS = 2.5
 VISION_INTERVAL_FRAMES = 2
+PRE_REGISTRATION_VISION_INTERVAL_FRAMES = 6
 PLANE_PREVIEW_INTERVAL_FRAMES = 3
 GESTURE_CONFIDENCE_THRESHOLD = 0.6
 START_GESTURE = "OK_Sign"
@@ -130,43 +131,98 @@ def draw_waiting_frame(frame_receiver, page_url=None, qr_image=None):
 def draw_runtime_diagnostics(frame, fps, hand_detection, plane_registered, game_started):
     height, width = frame.shape[:2]
     hand_count = len(hand_detection.get("hand_landmarks") or [])
-    x = max(width - 470, 10)
-    cv2.rectangle(frame, (x - 8, 8), (width - 8, 58), (0, 0, 0), -1)
+    x = max(width - 390, 10)
+    cv2.rectangle(frame, (x - 8, height - 64), (width - 8, height - 10), (0, 0, 0), -1)
     cv2.putText(
         frame,
-        f"Camera: {width}x{height} | Hands: {hand_count} | FPS: {fps:.1f}",
-        (x, 30),
+        f"{width}x{height} | Hands {hand_count} | FPS {fps:.1f}",
+        (x, height - 40),
         cv2.FONT_HERSHEY_SIMPLEX,
-        0.55,
+        0.48,
         (0, 255, 0),
-        2,
+        1,
     )
 
     plane_text = "A4 board registered" if plane_registered else "Center an A4 sheet and press SPACE"
     game_text = "Game started" if game_started else "Game not started"
-    cv2.rectangle(frame, (8, height - 76), (width - 8, height - 44), (0, 0, 0), -1)
     cv2.putText(
         frame,
         f"{plane_text} | {game_text}",
-        (16, height - 54),
+        (x, height - 18),
         cv2.FONT_HERSHEY_SIMPLEX,
-        0.55,
+        0.42,
         (0, 255, 0) if plane_registered else (0, 0, 255),
-        2,
+        1,
     )
 
 
 def draw_a4_detection_highlight(frame, tracking_result, plane_registered):
     if not tracking_result or not tracking_result.get("success"):
+        marker_candidates = (tracking_result or {}).get("marker_candidates") or []
+        for candidate in marker_candidates:
+            point = np.asarray(candidate.get("point"), dtype=np.int32)
+            if point.shape != (2,):
+                continue
+            color = (0, 0, 255) if candidate.get("accepted") else (0, 165, 255)
+            if candidate.get("stale_debug"):
+                color = tuple(int(channel * 0.45) for channel in color)
+            cv2.circle(frame, tuple(point), 7, color, 2, cv2.LINE_AA)
+            open_vector = np.asarray(candidate.get("open_vector"), dtype=np.float32)
+            if candidate.get("accepted") and open_vector.shape == (2,):
+                norm = float(np.linalg.norm(open_vector))
+                if norm > 1e-6:
+                    direction = open_vector / norm
+                    arrow_end = point.astype(np.float32) + direction * 28.0
+                    cv2.arrowedLine(
+                        frame,
+                        tuple(point),
+                        tuple(np.round(arrow_end).astype(np.int32)),
+                        color,
+                        2,
+                        cv2.LINE_AA,
+                        tipLength=0.35,
+                    )
+            slot = candidate.get("slot", "")
+            if slot:
+                cv2.putText(
+                    frame,
+                    slot.upper(),
+                    (int(point[0]) + 8, int(point[1]) - 6),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.36,
+                    color,
+                    1,
+                    cv2.LINE_AA,
+                )
+        selected_markers = (tracking_result or {}).get("selected_marker_centers")
+        if selected_markers is not None:
+            selected_points = np.asarray(selected_markers, dtype=np.int32)
+            if selected_points.shape == (4, 2):
+                cv2.polylines(frame, [selected_points], True, (0, 255, 255), 2, cv2.LINE_AA)
+                for label, point in zip(("TL", "TR", "BR", "BL"), selected_points):
+                    cv2.circle(frame, tuple(point), 9, (0, 255, 255), 2, cv2.LINE_AA)
+                    cv2.putText(
+                        frame,
+                        label,
+                        (int(point[0]) + 9, int(point[1]) + 14),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.38,
+                        (0, 255, 255),
+                        1,
+                        cv2.LINE_AA,
+                    )
         cv2.rectangle(frame, (8, 88), (360, 124), (0, 0, 0), -1)
+        reject_reason = (tracking_result or {}).get("reject_reason")
+        detail = f" | {reject_reason}" if reject_reason else ""
+        candidate_count = (tracking_result or {}).get("candidate_count", len(marker_candidates))
         cv2.putText(
             frame,
-            "A4 not detected",
+            f"A4 not detected | markers: {candidate_count}{detail}",
             (16, 112),
             cv2.FONT_HERSHEY_SIMPLEX,
-            0.62,
+            0.48,
             (0, 120, 255),
-            2,
+            1,
             cv2.LINE_AA,
         )
         return
@@ -224,8 +280,12 @@ def draw_a4_detection_highlight(frame, tracking_result, plane_registered):
     matched_points = tracking_result.get("matched_points", 0)
     if stale:
         text = "A4 temporarily occluded - holding last corners"
-    elif tracking_result.get("tracking_method") == "corner_marks":
-        text = f"A4 corner marks detected ({matched_points}/4, H {confidence:.2f}{error_text}{size_text})"
+    elif tracking_result.get("tracking_method") in ("corner_marks", "corner_marks_partial"):
+        white_score = tracking_result.get("white_validation_score")
+        white_text = f", white {white_score:.2f}" if white_score is not None else ""
+        text = f"A4 L markers detected ({matched_points}/4, H {confidence:.2f}{white_text}{error_text}{size_text})"
+    elif tracking_result.get("tracking_method") == "white_boundary_marker_assist":
+        text = f"A4 boundary + markers ({matched_points}/4, H {confidence:.2f}{size_text})"
     elif tracking_result.get("tracking_method") == "redetect_corner_marks":
         text = f"A4 re-detected ({matched_points}/4, H {confidence:.2f}{error_text}{size_text})"
     elif tracking_result.get("tracking_method") == "marker_track":
@@ -331,7 +391,8 @@ def main():
             fps = cv2.getTickFrequency() / max(cv2.getTickCount() - fps_clock, 1)
             fps_clock = cv2.getTickCount()
 
-            if frame_count % VISION_INTERVAL_FRAMES == 0:
+            vision_interval = VISION_INTERVAL_FRAMES if plane_registered else PRE_REGISTRATION_VISION_INTERVAL_FRAMES
+            if frame_count % vision_interval == 0:
                 last_hand_detection = hand_tracker.detect_hands(frame)
                 last_gesture_info_left = gesture_detector.detect_gesture(last_hand_detection["left_hand"], "left")
                 last_gesture_info_right = gesture_detector.detect_gesture(last_hand_detection["right_hand"], "right")
@@ -345,6 +406,7 @@ def main():
                 current_tracking_result = plane_tracker.track_plane(
                     frame,
                     hand_landmarks=hand_detection.get("hand_landmarks"),
+                    debug=debug_mode or not plane_registered,
                 )
             H = current_tracking_result["H"] if current_tracking_result["success"] else None
             if H is not None:
@@ -360,16 +422,6 @@ def main():
                     and gesture_info.get("confidence", 0.0) >= GESTURE_CONFIDENCE_THRESHOLD
                 )
                 start_gesture_counter = start_gesture_counter + 1 if start_ok else 0
-                cv2.rectangle(frame, (8, 42), (360, 82), (0, 0, 0), -1)
-                cv2.putText(
-                    frame,
-                    f"Show OK sign to start: {start_gesture_counter}/{START_GESTURE_HOLD_FRAMES}",
-                    (16, 68),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.62,
-                    (0, 255, 0) if start_ok else (0, 220, 255),
-                    2,
-                )
 
                 if start_gesture_counter >= START_GESTURE_HOLD_FRAMES:
                     game_manager.start_game()
@@ -393,6 +445,7 @@ def main():
             game_state = game_manager.get_game_state()
             events = game_manager.consume_events() if game_started else []
             floating_text.add_from_events(events, game_manager.player_pos, game_manager.enemy_pos)
+            tracking_needs_attention = should_show_tracking_attention(current_tracking_result)
 
             if H is not None and game_started:
                 frame = ar_renderer.render_battlefield(
@@ -401,6 +454,7 @@ def main():
                     game_manager.player_pos,
                     game_manager.enemy_pos,
                     game_state=game_state,
+                    show_floor_mesh=debug_mode or tracking_needs_attention,
                 )
                 frame = action_cards.draw(
                     frame,
@@ -414,8 +468,8 @@ def main():
 
             show_tracking_overlay = (
                 debug_mode
-                or not game_started
-                or should_show_tracking_attention(current_tracking_result)
+                or not plane_registered
+                or tracking_needs_attention
             )
             if show_tracking_overlay:
                 draw_a4_detection_highlight(frame, current_tracking_result, plane_registered)
@@ -423,7 +477,7 @@ def main():
             frame = hand_tracker.draw_hands(frame, hand_detection)
 
             frame = HUD.draw_game_layer(frame, game_state, gesture_info, plane_registered, game_started)
-            if debug_mode or not game_started:
+            if debug_mode or not plane_registered:
                 draw_runtime_diagnostics(frame, fps, hand_detection, plane_registered, game_started)
 
             display_width, display_height = get_display_size(WINDOW_NAME)
