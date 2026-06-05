@@ -1,80 +1,83 @@
-import numpy as np
 import cv2
+import numpy as np
+
 
 class HomographyEstimator:
-    """호모그래피 기반 좌표 변환"""
-    
+    """Direct homography utilities implemented with normalized DLT."""
+
+    @staticmethod
+    def compute_homography(src_points, dst_points):
+        src = np.asarray(src_points, dtype=np.float64)
+        dst = np.asarray(dst_points, dtype=np.float64)
+        if src.shape != (4, 2) or dst.shape != (4, 2):
+            raise ValueError("compute_homography expects exactly four 2D source and destination points")
+
+        src_norm, src_t = HomographyEstimator._normalize_points(src)
+        dst_norm, dst_t = HomographyEstimator._normalize_points(dst)
+
+        rows = []
+        for (x, y), (u, v) in zip(src_norm, dst_norm):
+            rows.append([-x, -y, -1, 0, 0, 0, u * x, u * y, u])
+            rows.append([0, 0, 0, -x, -y, -1, v * x, v * y, v])
+
+        _, _, vh = np.linalg.svd(np.asarray(rows, dtype=np.float64))
+        h_norm = vh[-1].reshape(3, 3)
+        h = np.linalg.inv(dst_t) @ h_norm @ src_t
+
+        if abs(h[2, 2]) > 1e-12:
+            h = h / h[2, 2]
+        return h.astype(np.float32)
+
+    @staticmethod
+    def _normalize_points(points):
+        centroid = points.mean(axis=0)
+        centered = points - centroid
+        mean_distance = np.mean(np.linalg.norm(centered, axis=1))
+        scale = np.sqrt(2.0) / mean_distance if mean_distance > 1e-12 else 1.0
+        transform = np.array(
+            [
+                [scale, 0.0, -scale * centroid[0]],
+                [0.0, scale, -scale * centroid[1]],
+                [0.0, 0.0, 1.0],
+            ],
+            dtype=np.float64,
+        )
+        homogeneous = np.column_stack([points, np.ones(len(points), dtype=np.float64)])
+        normalized = (transform @ homogeneous.T).T[:, :2]
+        return normalized, transform
+
     @staticmethod
     def transform_point(point, H):
-        """
-        단일 점 변환
-        
-        Args:
-            point: (x, y)
-            H: 호모그래피 행렬
-            
-        Returns:
-            tuple: (x', y')
-        """
         if H is None:
             return point
-        
-        p = np.array([point[0], point[1], 1])
-        p_transformed = H @ p
-        x = int(p_transformed[0] / p_transformed[2])
-        y = int(p_transformed[1] / p_transformed[2])
+
+        p = np.array([point[0], point[1], 1.0], dtype=np.float64)
+        p_transformed = np.asarray(H, dtype=np.float64) @ p
+        if abs(p_transformed[2]) <= 1e-12:
+            return (int(point[0]), int(point[1]))
+        x = int(round(p_transformed[0] / p_transformed[2]))
+        y = int(round(p_transformed[1] / p_transformed[2]))
         return (x, y)
-    
+
     @staticmethod
     def transform_points(points, H):
-        """
-        여러 점 변환
-        
-        Args:
-            points: [(x1, y1), (x2, y2), ...]
-            H: 호모그래피 행렬
-            
-        Returns:
-            list: [(x1', y1'), (x2', y2'), ...]
-        """
-        if H is None:
-            return points
-        
-        transformed = []
-        for point in points:
-            transformed.append(HomographyEstimator.transform_point(point, H))
-        return transformed
-    
+        return [HomographyEstimator.transform_point(point, H) for point in points]
+
     @staticmethod
-    def draw_grid_on_plane(frame, H, grid_size=50, color=(0, 255, 0)):
-        """
-        호모그래피를 이용해 평면에 그리드 그리기
-        
-        Args:
-            frame: BGR 입력 프레임
-            H: 호모그래피 행렬
-            grid_size: 그리드 간격 (픽셀)
-            
-        Returns:
-            frame: 그리드가 그려진 프레임
-        """
+    def draw_grid_on_plane(frame, H, plane_size=(210, 297), grid_size=30, color=(50, 50, 50)):
         if H is None:
             return frame
-        
-        height, width = frame.shape[:2]
-        
-        # 수평선
-        for y in range(0, height, grid_size):
-            points = [(0, y), (width, y)]
-            transformed = HomographyEstimator.transform_points(points, np.linalg.inv(H))
-            if all(0 <= p[0] < width and 0 <= p[1] < height for p in transformed):
-                cv2.line(frame, tuple(map(int, transformed[0])), tuple(map(int, transformed[1])), color, 1)
-        
-        # 수직선
-        for x in range(0, width, grid_size):
-            points = [(x, 0), (x, height)]
-            transformed = HomographyEstimator.transform_points(points, np.linalg.inv(H))
-            if all(0 <= p[0] < width and 0 <= p[1] < height for p in transformed):
-                cv2.line(frame, tuple(map(int, transformed[0])), tuple(map(int, transformed[1])), color, 1)
-        
+
+        width, height = plane_size
+
+        for x in range(0, width + 1, grid_size):
+            p1 = HomographyEstimator.transform_point((x, 0), H)
+            p2 = HomographyEstimator.transform_point((x, height), H)
+            cv2.line(frame, p1, p2, color, 1)
+
+        for y in range(0, height + 1, grid_size):
+            p1 = HomographyEstimator.transform_point((0, y), H)
+            p2 = HomographyEstimator.transform_point((width, y), H)
+            cv2.line(frame, p1, p2, color, 1)
+
         return frame

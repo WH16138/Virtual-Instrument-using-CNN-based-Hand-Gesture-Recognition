@@ -2,7 +2,9 @@ import cv2
 import cv2
 import importlib
 import numpy as np
+import sys
 import tempfile
+import types
 from pathlib import Path
 
 class HandTracker:
@@ -17,6 +19,7 @@ class HandTracker:
         min_tracking_confidence=0.5,
     ):
         self.model_path = Path(model_path) if model_path else self._find_model_path()
+        self._install_tensorflow_doc_controls_stub()
         self.hand_module = importlib.import_module("mediapipe.tasks.python.vision.hand_landmarker")
         self.image_module = importlib.import_module("mediapipe.tasks.python.vision.core.image")
         self.hand_landmarker = self.hand_module.HandLandmarker.create_from_model_path(
@@ -29,6 +32,35 @@ class HandTracker:
         self.min_hand_detection_confidence = min_hand_detection_confidence
         self.min_hand_presence_confidence = min_hand_presence_confidence
         self.min_tracking_confidence = min_tracking_confidence
+
+    @staticmethod
+    def _install_tensorflow_doc_controls_stub():
+        """Avoid TensorFlow DLL loading triggered by MediaPipe doc-only imports."""
+        if "tensorflow" in sys.modules:
+            return
+
+        def decorator(*args, **kwargs):
+            if len(args) == 1 and callable(args[0]) and not kwargs:
+                return args[0]
+            return lambda obj: obj
+
+        class DocControlsStub(types.ModuleType):
+            def __getattr__(self, _name):
+                return decorator
+
+        tensorflow_module = types.ModuleType("tensorflow")
+        tools_module = types.ModuleType("tensorflow.tools")
+        docs_module = types.ModuleType("tensorflow.tools.docs")
+        doc_controls_module = DocControlsStub("tensorflow.tools.docs.doc_controls")
+
+        docs_module.doc_controls = doc_controls_module
+        tools_module.docs = docs_module
+        tensorflow_module.tools = tools_module
+
+        sys.modules["tensorflow"] = tensorflow_module
+        sys.modules["tensorflow.tools"] = tools_module
+        sys.modules["tensorflow.tools.docs"] = docs_module
+        sys.modules["tensorflow.tools.docs.doc_controls"] = doc_controls_module
 
     def _find_model_path(self):
         candidates = [

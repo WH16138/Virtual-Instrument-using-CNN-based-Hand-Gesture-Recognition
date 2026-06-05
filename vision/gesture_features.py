@@ -2,7 +2,7 @@ import numpy as np
 
 
 FEATURE_SIZE = 63
-GESTURE_CLASSES = ["Fist", "Open_Palm", "V_Sign"]
+GESTURE_CLASSES = ["Fist", "Open_Palm", "V_Sign", "OK_Sign"]
 
 
 def landmarks_to_feature_vector(landmarks):

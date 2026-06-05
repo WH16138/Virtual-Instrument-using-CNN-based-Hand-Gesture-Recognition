@@ -87,7 +87,7 @@ Responsibility:
 Key files:
 
 - `hand_tracker.py`: MediaPipe HandLandmarker wrapper
-- `gesture_detector.py`: Keras landmark-vector gesture model wrapper
+- `gesture_detector.py`: landmark-vector gesture model wrapper, preferring `models/gesture_model.pkl`
 - `dataset_capture.py`: camera landmark-vector dataset capture helper
 - `dataset_collector.py`: landmark-vector dataset helper
 
@@ -109,7 +109,7 @@ Key files:
 
 - `train.py`: lightweight landmark-vector classifier training script
 - `test_gesture_model.py`: standalone camera-based gesture model tester
-- `gesture_model.keras`: trained gesture classifier
+- `gesture_model.pkl`: trained landmark gesture classifier
 - `hand_landmarker.task`: MediaPipe hand landmark model
 
 Rules:
@@ -121,21 +121,22 @@ Rules:
 
 Responsibility:
 
-- register a planar surface
-- track the plane using feature matching and homography
-- render AR battlefield elements on the tracked plane
+- detect the centered white A4 paper board
+- compute board-to-screen homography with direct DLT
+- render 3D-style AR battlefield elements rising from the A4 floor
 
 Key files:
 
-- `plane_tracker.py`: ORB, matching, RANSAC homography
-- `homography.py`: point transforms and grid helpers
-- `ar_renderer.py`: battlefield, player, enemy overlay
+- `plane_tracker.py`: centered white A4 detection using thresholding and connected components
+- `homography.py`: direct normalized DLT homography and point projection helpers
+- `ar_renderer.py`: perspective floor grid and raised player/enemy units
 
 Rules:
 
 - AR code should not know battle calculations.
-- Registration remains manual until tracking is stable.
+- Registration remains manual: center a white A4 sheet and press `SPACE`.
 - AR overlay is only expected after plane registration and game start.
+- The renderer approximates camera pose from the board homography and a virtual camera matrix.
 
 ### `game/`
 
@@ -156,6 +157,8 @@ Rules:
 
 - No OpenCV, MediaPipe, or networking logic should be added here.
 - Keep mechanics simple until CV demo quality is stable.
+- `OK_Sign` is a start gesture only and should not consume a battle turn.
+- `GameManager` owns turn delays and repeated-input guards.
 
 ### `ui/`
 
@@ -179,7 +182,7 @@ Important runtime flags in `main.py`:
 
 - `plane_registered`: true after successful `PlaneTracker.register_plane(frame)`
 - `game_started`: true after battle starts
-- `both_hands_counter`: counts stable two-hand start condition
+- `start_gesture_counter`: counts stable `OK_Sign` frames for battle start
 
 Expected flow:
 
@@ -187,8 +190,8 @@ Expected flow:
 start main.py
   -> wait for fresh phone frame
   -> show camera stream
-  -> press SPACE to register plane
-  -> press SPACE again or use gesture start condition
+  -> center white A4 sheet and press SPACE to register board
+  -> hold OK_Sign to start, or press SPACE again as keyboard fallback
   -> process player gestures during PLAYER_TURN
   -> render AR battlefield when homography is valid
 ```
@@ -201,6 +204,7 @@ Runtime gesture classes:
 Fist      -> Attack
 Open_Palm -> Defend
 V_Sign    -> Skill
+OK_Sign   -> Start game only
 ```
 
 `GestureDetector.detect_gesture()` returns:
@@ -246,6 +250,7 @@ When no fresh camera frame is available, `main.py` should render a connection se
 - Mobile camera access over LAN HTTP may require browser flags or HTTPS/WSS.
 - Old PNG hand-crop datasets in `dataset/` are reserved for possible future CNN experiments.
 - Current landmark-vector training data lives in `dataset_landmarks/`.
+- Runtime hand tracking installs a tiny `tensorflow.tools.docs.doc_controls` stub before importing MediaPipe Tasks. This avoids a TensorFlow Python DLL load caused by MediaPipe's documentation-only optional import path. MediaPipe still uses its own TensorFlow Lite runtime internally.
 - MediaPipe processing can be slow if frame resolution is too high.
 - Feature-poor surfaces can fail ORB plane registration.
 - Some code comments/UI strings have encoding damage.
@@ -307,3 +312,34 @@ python models/train.py --mode cnn
 ```
 
 The default landmark runtime uses scikit-learn pickle models and does not require TensorFlow. The CNN model is not currently consumed by `main.py`; add a CNN detector or detector mode switch before using `models/gesture_model_cnn.keras` in gameplay.
+## A4 Board AR Tracking
+
+The AR target has shifted from markerless arbitrary-plane tracking to a standard white A4 paper game board.
+
+Runtime behavior:
+
+```text
+center white A4 sheet in camera view
+  -> press SPACE
+  -> PlaneTracker detects the centered white A4 candidate
+  -> HomographyEstimator computes board-to-screen homography with direct DLT
+  -> ARRenderer estimates an approximate pose from the homography
+  -> ARRenderer draws a perspective floor grid and raised 3D units
+```
+
+Implementation constraints:
+
+- Use OpenCV for camera input, color conversion, display, and basic image operations.
+- Do not use `cv2.findHomography`, `cv2.getPerspectiveTransform`, `cv2.aruco`, or marker libraries for the core board solve.
+- Current `ar/homography.py` computes homography with normalized DLT using NumPy SVD.
+- Current `ar/plane_tracker.py` first detects four black marks near the inside corners of the A4 sheet, maps them to inset board coordinates, and computes the full A4 homography.
+- After registration, marker detection is constrained to small ROIs predicted by the previous homography, so background changes are less likely to steal the track.
+- Pixel morphology and component labeling use OpenCV's optimized C implementations; the project-owned core remains the marker geometry, validation, and direct DLT homography logic.
+- If predicted marker ROIs are not found, `PlaneTracker` falls back to patch tracking, then short hold-last-corners behavior.
+- Current `ar/ar_renderer.py` uses a screen-size-based virtual camera matrix to project simple 3D geometry onto the A4 board.
+
+Known limitations:
+
+- Plain white A4 detection can fail on white desks, bright backgrounds, glare, or weak contrast.
+- The current detector uses a bounding rectangle of the white component, so extreme perspective angles are less accurate than a printed border or corner marker design.
+- This tradeoff is intentional for the ordinary A4 with no special preparation requirement.

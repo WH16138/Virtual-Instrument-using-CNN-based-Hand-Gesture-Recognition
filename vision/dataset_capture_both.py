@@ -19,6 +19,7 @@ KEY_TO_LABEL = {
     ord("1"): "Fist",
     ord("2"): "Open_Palm",
     ord("3"): "V_Sign",
+    ord("4"): "OK_Sign",
 }
 
 
@@ -73,7 +74,7 @@ def draw_overlay(frame, active_label, png_counts, landmark_counts, crop):
     lines = [
         "Combined dataset capture",
         "Saves PNG crop + landmark NPY together",
-        "1: Fist | 2: Open_Palm | 3: V_Sign | Q: quit",
+        "1: Fist | 2: Open_Palm | 3: V_Sign | 4: OK_Sign | Q: quit",
         f"Last saved: {active_label or '-'}",
         "PNG: " + "  ".join(f"{label}: {png_counts.get(label, 0)}" for label in GESTURE_CLASSES),
         "NPY: " + "  ".join(f"{label}: {landmark_counts.get(label, 0)}" for label in GESTURE_CLASSES),

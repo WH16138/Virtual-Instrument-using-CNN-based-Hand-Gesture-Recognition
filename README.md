@@ -7,8 +7,8 @@ The project uses a game as the demonstration layer, but the main goal is to show
 - smartphone camera streaming to a PC
 - hand landmark detection
 - landmark-vector based gesture classification
-- markerless plane registration and homography tracking
-- AR-style battlefield overlay
+- standard white A4 paper board detection and homography tracking
+- perspective 3D-style battlefield overlay
 - turn-based battle interaction
 
 ## Current Status
@@ -20,21 +20,23 @@ Implemented:
 - Latest-frame receiver that discards stale frames.
 - Camera stream display in the OpenCV desktop window.
 - MediaPipe HandLandmarker integration for hand landmark extraction.
-- Lightweight gesture model loading from `models/gesture_model.keras`.
+- Lightweight gesture model loading from `models/gesture_model.pkl`.
 - Gesture classes:
   - `Fist`
   - `Open_Palm`
   - `V_Sign`
+  - `OK_Sign` (reserved for starting the game)
 - Basic turn-based battle system.
-- ORB + BFMatcher + RANSAC homography plane registration.
-- AR battlefield renderer for player/enemy positions after plane registration and game start.
+- Centered white A4 paper detection for the game board.
+- Direct normalized DLT homography implementation for board-to-screen projection.
+- 3D-style AR battlefield renderer that treats the A4 sheet as the virtual floor.
 - Standalone gesture model test program at `models/test_gesture_model.py`.
 
 In progress / needs validation:
 
 - Gesture recognition quality is not yet confirmed to be reliable in the full game loop.
 - The model input path has been unified around normalized MediaPipe landmark vectors, so old PNG image datasets should be recollected as `.npy` feature samples.
-- AR overlay requires manual plane registration with `SPACE`; it is not automatic.
+- The game starts from a held `OK_Sign` after A4 board registration. `SPACE` remains as a keyboard fallback.
 - Some older comments or strings in the code may still have encoding damage and should be cleaned gradually.
 
 ## Requirements
@@ -49,7 +51,7 @@ The expected model files are:
 
 ```text
 models/hand_landmarker.task
-models/gesture_model.keras
+models/gesture_model.pkl
 ```
 
 ## Running the Game
@@ -75,11 +77,14 @@ After startup:
    - increasing `Frames sent`
 5. The PC OpenCV window should show the phone camera stream.
 
+For stable A4 board tracking, draw black marks near the four inside corners of the A4 sheet. A simple L shape or filled dot with a dark pen is enough. Keep each mark roughly 1-2 cm inside the paper corner. The tracker uses these high-contrast marks first, then falls back to white-paper boundary detection.
+
 Controls in the PC OpenCV window:
 
 - `Q`: quit
-- `SPACE`: register the current plane
-- `SPACE` again after registration: start the battle manually
+- `SPACE`: register the centered A4 board
+- `OK_Sign`: start the battle after A4 registration
+- `SPACE` again after registration: start the battle manually as fallback
 - `R`: reset the game
 
 ## Mobile Camera Notes
@@ -158,6 +163,7 @@ Controls:
 - `1`: save `Fist`
 - `2`: save `Open_Palm`
 - `3`: save `V_Sign`
+- `4`: save `OK_Sign`
 - `Q`: quit
 
 Train the model:
@@ -178,6 +184,7 @@ The trainer reads `.npy` feature files from:
 dataset_landmarks/Fist/
 dataset_landmarks/Open_Palm/
 dataset_landmarks/V_Sign/
+dataset_landmarks/OK_Sign/
 ```
 
 The older `dataset/` folder can be kept for future CNN/image experiments. It is not used by the current landmark-vector trainer.
@@ -189,6 +196,8 @@ models/gesture_model.pkl
 ```
 
 This is the default runtime model used by `main.py`, and it avoids TensorFlow native DLL issues.
+
+`main.py` also avoids MediaPipe's documentation-only TensorFlow import path during hand-tracker startup. Seeing a TensorFlow Lite XNNPACK delegate log from MediaPipe is normal; the failing TensorFlow Python DLL runtime is not required for the default landmark pipeline.
 
 ### Option B: PNG CNN (kept for future experiments)
 
@@ -224,6 +233,7 @@ The CNN trainer reads PNG files from:
 dataset/Fist/
 dataset/Open_Palm/
 dataset/V_Sign/
+dataset/OK_Sign/
 ```
 
 CNN PNG samples are saved from the clean camera frame before UI text or MediaPipe landmark drawings are added.
@@ -253,7 +263,7 @@ python models/test_gesture_model.py --camera 1
 Optional model path:
 
 ```bash
-python models/test_gesture_model.py --model models/gesture_model.keras
+python models/test_gesture_model.py --model models/gesture_model.pkl
 ```
 
 The test window shows:
@@ -271,9 +281,9 @@ Use this script before debugging the full game. If this test cannot recognize ha
 
 ```text
 ar/
-  plane_tracker.py      ORB feature extraction and homography tracking
-  homography.py         coordinate transforms and grid drawing helpers
-  ar_renderer.py        AR battlefield overlay
+  plane_tracker.py      centered white A4 board detection
+  homography.py         direct DLT homography and coordinate projection
+  ar_renderer.py        3D-style AR battlefield overlay on the A4 floor
 
 game/
   battle_system.py      turn state and combat resolution
@@ -285,7 +295,7 @@ game/
 models/
   train.py              CNN training script
   test_gesture_model.py standalone gesture model test runner
-  gesture_model.keras   trained gesture model
+  gesture_model.pkl     trained landmark gesture model
   hand_landmarker.task  MediaPipe hand landmark model
 
 network/
@@ -316,10 +326,10 @@ web/
 - [x] Basic gesture-to-action mapping
 - [x] Turn-based battle states
 - [x] HP display
-- [x] Manual plane registration
-- [x] Homography-based AR overlay path
-- [ ] Recollected `.npy` landmark dataset in `dataset_landmarks/` for all three gestures
+- [x] Manual centered A4 board registration
+- [x] Direct DLT homography-based AR overlay path
+- [ ] Recollected `.npy` landmark dataset in `dataset_landmarks/` for all four gestures
 - [ ] Reliable gesture recognition in the full game loop
-- [ ] Verified AR overlay stability under phone camera motion
+- [ ] Verified A4 board overlay stability under phone camera motion
 - [ ] Clean all broken encoded UI strings
 - [ ] Document final demo workflow after validation
