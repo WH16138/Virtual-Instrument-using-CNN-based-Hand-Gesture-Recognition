@@ -61,14 +61,36 @@ class LandmarkGestureModelTrainer:
                 batch_size="auto",
                 learning_rate="adaptive",
                 max_iter=max_iter,
-                early_stopping=True,
-                validation_fraction=0.15,
+                early_stopping=False,
                 n_iter_no_change=25,
                 random_state=42,
             ),
         )
 
-    def train(self, max_iter=800, test_size=0.2):
+    def split_dataset(self, x_values, y_values, validation_size=0.15, test_size=0.15):
+        class_counts = np.bincount(y_values, minlength=len(self.gesture_classes))
+        stratify = y_values if min(class_counts) >= 2 else None
+        x_train_val, x_test, y_train_val, y_test = train_test_split(
+            x_values,
+            y_values,
+            test_size=test_size,
+            random_state=42,
+            stratify=stratify,
+        )
+
+        train_val_counts = np.bincount(y_train_val, minlength=len(self.gesture_classes))
+        stratify_train_val = y_train_val if min(train_val_counts) >= 2 else None
+        relative_validation_size = validation_size / max(1.0 - test_size, 1e-6)
+        x_train, x_val, y_train, y_val = train_test_split(
+            x_train_val,
+            y_train_val,
+            test_size=relative_validation_size,
+            random_state=43,
+            stratify=stratify_train_val,
+        )
+        return x_train, x_val, x_test, y_train, y_val, y_test
+
+    def train(self, max_iter=800, validation_size=0.15, test_size=0.15):
         x_values, y_values = self.load_dataset()
         if len(x_values) == 0:
             raise RuntimeError(
@@ -79,21 +101,31 @@ class LandmarkGestureModelTrainer:
         for idx, gesture_class in enumerate(self.gesture_classes):
             print(f"  {gesture_class}: {int(np.sum(y_values == idx))}")
 
-        class_counts = np.bincount(y_values, minlength=len(self.gesture_classes))
-        stratify = y_values if min(class_counts) >= 2 else None
-        x_train, x_test, y_train, y_test = train_test_split(
+        x_train, x_val, x_test, y_train, y_val, y_test = self.split_dataset(
             x_values,
             y_values,
+            validation_size=validation_size,
             test_size=test_size,
-            random_state=42,
-            stratify=stratify,
         )
+        print(f"Split sizes: train={len(x_train)}, validation={len(x_val)}, test={len(x_test)}")
 
         model = self.build_model(max_iter=max_iter)
         model.fit(x_train, y_train)
 
+        validation_predictions = model.predict(x_val)
+        print("\nValidation classification report:")
+        print(
+            classification_report(
+                y_val,
+                validation_predictions,
+                labels=list(range(len(self.gesture_classes))),
+                target_names=self.gesture_classes,
+                zero_division=0,
+            )
+        )
+
         predictions = model.predict(x_test)
-        print("\nClassification report:")
+        print("\nTest classification report:")
         print(
             classification_report(
                 y_test,
@@ -103,7 +135,7 @@ class LandmarkGestureModelTrainer:
                 zero_division=0,
             )
         )
-        print("Confusion matrix:")
+        print("Test confusion matrix:")
         print(confusion_matrix(y_test, predictions))
 
         self.model_output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -118,13 +150,15 @@ def parse_args():
     parser.add_argument("--dataset", default="dataset_landmarks", help="Landmark dataset directory.")
     parser.add_argument("--output", default="models/gesture_model.pkl", help="Output pickle model path.")
     parser.add_argument("--max-iter", type=int, default=800)
+    parser.add_argument("--validation-size", type=float, default=0.15)
+    parser.add_argument("--test-size", type=float, default=0.15)
     return parser.parse_args()
 
 
 def main():
     args = parse_args()
     trainer = LandmarkGestureModelTrainer(args.dataset, args.output)
-    trainer.train(max_iter=args.max_iter)
+    trainer.train(max_iter=args.max_iter, validation_size=args.validation_size, test_size=args.test_size)
 
 
 if __name__ == "__main__":

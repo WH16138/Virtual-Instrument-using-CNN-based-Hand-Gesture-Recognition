@@ -21,6 +21,8 @@ def parse_args():
     parser.add_argument("--epochs", type=int, default=None, help="CNN epochs.")
     parser.add_argument("--batch-size", type=int, default=None, help="CNN batch size.")
     parser.add_argument("--max-iter", type=int, default=None, help="Landmark MLP max iterations.")
+    parser.add_argument("--validation-size", type=float, default=0.15, help="Validation split ratio.")
+    parser.add_argument("--test-size", type=float, default=0.15, help="Test split ratio.")
     return parser.parse_args()
 
 
@@ -34,7 +36,11 @@ def main():
             dataset_dir=args.dataset or "dataset_landmarks",
             model_output_path=args.output or "models/gesture_model.pkl",
         )
-        trainer.train(max_iter=args.max_iter or 800)
+        trainer.train(
+            max_iter=args.max_iter or 800,
+            validation_size=args.validation_size,
+            test_size=args.test_size,
+        )
         return
 
     from models.train_cnn import CnnGestureModelTrainer
@@ -46,6 +52,8 @@ def main():
     trainer.train(
         epochs=args.epochs or 50,
         batch_size=args.batch_size or 16,
+        validation_size=args.validation_size,
+        test_size=args.test_size,
     )
 
 
