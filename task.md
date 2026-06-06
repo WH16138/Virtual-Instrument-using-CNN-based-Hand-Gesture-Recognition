@@ -1,83 +1,153 @@
-# VisionQuest Task Notes
+﻿# VisionQuest Task Notes
 
-Last updated: 2026-06-05
+Last updated: 2026-06-07
 
 ## Current Focus
 
-Improve demo completeness while keeping the CV pipeline stable:
+Prepare a stable live demo with:
 
-- reliable 150 mm gate-board registration/tracking
-- clean gameplay view
-- textured enemy/ground AR rendering
-- understandable gesture-driven battle flow
+- reliable 150 mm gate marker tracking
+- smooth AR ground/enemy rendering
+- readable AR-space UI
+- gesture-only gameplay after startup
+- clear wave, reward, augment, and restart flow
 
 ## Completed Recently
 
-- Replaced corner-mark primary tracking with the single 150 mm gate marker.
-- Added homography confidence, reprojection error checks, and EMA smoothing.
-- Added registered-board optical-flow tracking with periodic gate re-detection.
-- Kept homography-projected missing marker display for the legacy corner-mark path.
-- Kept hand occlusion masks for legacy corner-mark candidates.
-- Added debug overlay toggle with `D`.
-- Hidden marker/homography/FPS debug text during gameplay by default.
-- Removed decorative board corner pillars.
-- Removed player model rendering.
-- Added enemy-specific ground model path.
-- Added GLB/GLTF/OBJ rendering through `trimesh` + `pyrender`.
-- Added OpenCV alpha blending of pyrender RGBA output.
-- Fixed GLB scene graph loading for multi-mesh assets.
-- Fixed pyrender camera clipping by setting a larger `zfar`.
-- Converted GLB/GLTF Y-up assets to board Z-up.
-- Added enemy floating/bobbing motion.
-- Switched current enemy/ground paths in `game/wave_manager.py` to `.glb`.
+### Camera / Network
+
+- `main.py` starts the HTTP camera page and WebSocket server.
+- QR URL includes the WebSocket port.
+- Latest-frame freshness prevents frozen-frame processing.
+- PC-rendered game preview is sent back to the phone.
+- Preview encoding is threaded and rate-limited.
+
+### Board Tracking
+
+- Single 150 mm gate marker is now the primary board detector.
+- Marker validation uses outer square, central ring, and short direction stem.
+- Frame-edge rejection reduces full-screen false overlays.
+- Registered tracking uses LK optical flow and RANSAC homography.
+- Confidence controls smoothing, pose hold, and re-detection.
+- Phone resolution/orientation changes reset tracking caches.
+- Legacy L-marker code remains but is not the default path.
+
+### AR Rendering
+
+- GLB/GLTF/OBJ loading through `trimesh`.
+- Offscreen `pyrender` RGBA rendering and OpenCV alpha blending.
+- GLB/GLTF Y-up to board Z-up conversion.
+- Ground model top-down texture caching and homography warp.
+- Player model and decorative corner pillars removed.
+- Enemy model floats and is hidden during wave clear/reward selection.
+- Enemy render is downscaled/reused to reduce FPS cost.
+
+### Game Flow
+
+- Combat changed to simultaneous card reveal.
+- Player holds a gesture to choose Strike/Guard/Shot.
+- Enemy action is selected from HP-based probabilities.
+- Player/enemy cards reveal together before resolution.
+- Wave clear opens reward selection.
+- Defeat supports OK-sign 2 second run restart without board reset.
+
+### Waves / Rewards / Augments
+
+- Difficulty scales by `1.15 ** (wave - 1)`.
+- Enemy types support `min_wave`.
+- Dragon appears from wave 4 onward.
+- Reward catalog includes stat, card upgrade, and augment rewards.
+- Owned augments are excluded from future reward choices.
+- Hook-style augment system implemented.
+
+Implemented augments:
+
+- Double Attack
+- Cull the Weak
+- Deep Rest
+- Counter Guard
+- Chicken Game
+- Vampire
+- Prepared
+- Insurance
+- First Strike
+
+### UI
+
+- Core gameplay UI moved into board-relative AR space.
+- Player panel, action cards, reward cards, gesture graph, and augment badges enlarged.
+- High-resolution card/panel rendering is used before perspective warp.
+- Enemy HP and action probability hint are shown near enemy position.
+- Floating combat text has small random offsets.
+- Defeat panel includes restart instruction and border-progress highlight.
+- Debug overlays are hidden during normal gameplay and toggled with `D`.
 
 ## Validation Checklist
 
-Run:
+Static check:
 
 ```bash
-python main.py
+python -m py_compile main.py game/*.py ui/*.py ar/*.py network/*.py vision/*.py models/*.py
 ```
 
-Check:
-
-- phone page connects and sends frames
-- square gate marker is detected
-- `SPACE` registers the board without returning to QR setup
-- `OK_Sign` or second `SPACE` starts game
-- debug overlays are hidden after game start
-- `D` toggles debug overlays
-- ground GLB appears on board
-- enemy GLB appears above ground
-- enemy floats slowly up/down
-- `R` resets the game
-
-Model-only check:
+Gesture-only check:
 
 ```bash
 python models/test_gesture_model.py
 ```
 
+Full app:
+
+```bash
+python main.py
+```
+
+Manual checks:
+
+- Phone page loads from QR.
+- WebSocket connects and frames increase.
+- Rendered preview appears on phone.
+- Gate marker registers after OK hold.
+- Game starts without keyboard input.
+- Fist/Open Palm/V/Gun select correct cards.
+- Player and enemy cards reveal together.
+- Reward selection appears after wave clear.
+- Owned augments are not offered again.
+- Dragon does not appear before wave 4.
+- Defeat screen restarts after OK hold.
+- `D` toggles debug overlays.
+- `R` hard-resets board registration and game state.
+
 ## Known Issues / Risks
 
 - HTTPS/WSS is not implemented.
-- `pyrender` depends on local OpenGL/offscreen rendering support.
-- GLB animation clips are not played.
+- `pyrender` depends on local OpenGL/offscreen support.
+- GLB animations are not played.
 - Camera calibration is approximate.
-- Board pose quality still depends on marker visibility and homography stability.
+- Board pose quality depends on marker visibility and homography stability.
+- Model facing direction varies by asset; only yaw is currently exposed.
+- Korean augment labels in `game/augment_system.py` need encoding cleanup.
 - Gesture accuracy depends on landmark dataset quality.
 
 ## Next Useful Work
 
-- Add per-enemy render parameters:
-  - `model_scale`
-  - `ground_scale`
-  - `yaw`
-  - `height_offset`
-  - `bob_amplitude`
-  - `bob_speed`
-- Add a clear warning overlay if `pyrender` is unavailable.
-- Add simple attack/idle transform animations.
-- Add optional real GLB animation playback later.
-- Tune marker ROI and confidence thresholds after live testing.
-- Improve gesture dataset balance for `Open_Palm` and `OK_Sign`.
+High priority:
+
+- Add per-enemy model orientation and scale settings.
+- Clean Korean text encoding in `game/augment_system.py`.
+- Add warning overlay if `pyrender` or model loading fails.
+- Tune gate marker thresholds with live camera samples.
+
+Medium priority:
+
+- Add simple attack/hit/idle transform animations.
+- Add persistent best-wave storage.
+- Add marker drawing guide image.
+- Add final demo checklist.
+
+Low priority:
+
+- HTTPS/WSS support.
+- Real GLB animation playback.
+- Camera calibration workflow.
+- Revisit CNN runtime gesture path.

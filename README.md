@@ -1,57 +1,42 @@
-# VisionQuest
+﻿# VisionQuest
 
-VisionQuest is a computer-vision based AR dungeon battle simulator controlled by hand gestures.
+VisionQuest is a computer-vision based AR dungeon battle game controlled by hand gestures.
 
-The game is the demonstration layer. The core project goal is an end-to-end computer vision pipeline:
+Last updated: 2026-06-07
+
+## Project Goal
+
+The game is the demo layer for an end-to-end real-time CV pipeline:
 
 ```text
-smartphone camera
-  -> WebSocket JPEG frames
-  -> OpenCV desktop loop
-  -> MediaPipe hand landmarks
-  -> landmark-vector gesture classifier
-  -> 150 mm gate-board marker tracking
-  -> homography / solvePnP pose
-  -> AR battlefield compositing
-  -> turn-based battle interaction
+phone camera -> WebSocket JPEG frames -> OpenCV loop
+  -> MediaPipe hand landmarks -> gesture classifier
+  -> 150 mm gate marker tracking -> homography / solvePnP
+  -> AR ground/enemy rendering -> gesture card battle
+  -> optional rendered preview back to phone
 ```
 
 ## Current Status
 
 Implemented:
 
-- Smartphone camera streaming through a local HTTP page and WebSocket frame server.
-- QR code generation shown in the OpenCV waiting screen.
-- Latest-frame receiver with stale-frame detection and short registration/start grace handling.
-- MediaPipe hand landmark detection.
-- Landmark-vector gesture classifier.
-- Gesture classes:
-  - `Fist`: Strike
-  - `Open_Palm`: Guard
-  - `V_Sign`: ranged attack
-  - `Gun_Sign`: ranged attack, trained separately from `V_Sign`
-  - `OK_Sign`: board registration and game start during setup
-- Default 150 x 150 mm hand-drawn gate-board registration using an outer frame, central ring, and short direction stem.
-- Perspective-normalized gate marker validation, homography confidence, reprojection checks, and temporal smoothing.
-- Registered-board tracking using multi-feature optical flow, forward/backward validation, RANSAC homography, and periodic gate re-detection.
-- Infinite wave battle system with enemy types and difficulty scaling.
-- Textured model rendering through `trimesh` + `pyrender` with OpenCV alpha blending.
-- GLB/GLTF model support for enemy and ground models.
-- Debug overlay toggle with `D`.
-- Standalone gesture model tester at `models/test_gesture_model.py`.
-
-Recently changed:
-
-- The player model is no longer rendered on the board.
-- The AR board now focuses on terrain/ground model plus the current enemy model.
-- Old decorative corner pillars were removed.
-- During gameplay, board outlines, homography text, marker debug graphics, FPS diagnostics, and other debug overlays are hidden by default.
-- Press `D` to show or hide debug overlays.
-- Enemy models float slowly up and down to avoid a static, frozen look.
+- Local HTTP/WebSocket phone camera streaming with QR setup.
+- Latest-frame receiver, stale-frame detection, and graceful setup/start handling.
+- PC-rendered game frame preview sent back to the phone.
+- MediaPipe hand landmarks plus landmark-vector gesture classifier.
+- Gesture confidence filtering using probability and class-margin thresholds.
+- Single 150 mm gate marker board tracking.
+- Legacy L-corner marker code preserved as a comparison path.
+- Homography confidence, reprojection checks, smoothing, optical-flow tracking, RANSAC recovery, and periodic re-detection.
+- GLB/GLTF ground and enemy rendering with `trimesh`, `pyrender`, and OpenCV alpha blending.
+- AR-space player info, action cards, reward cards, enemy HP, enemy action hints, gesture probability bars, and augment badges.
+- Simultaneous card reveal combat.
+- Infinite waves with multiplicative difficulty scaling.
+- Run-limited rewards and hook-style augments.
+- Defeat restart by holding `OK_Sign` for 2 seconds.
+- Debug overlays toggled by `D`.
 
 ## Requirements
-
-Install dependencies:
 
 ```bash
 pip install -r requirements.txt
@@ -68,17 +53,18 @@ Important packages:
 - `trimesh`
 - `pyrender`
 - `PyOpenGL`
+- `Pillow`
 
-Expected model files:
+Expected runtime files:
 
 ```text
 models/hand_landmarker.task
 models/gesture_model.pkl
 ```
 
-## Running
+The `.pkl` gesture model is preferred at runtime because it avoids TensorFlow native DLL loading in `main.py`.
 
-Start the full application:
+## Running
 
 ```bash
 python main.py
@@ -95,197 +81,170 @@ Startup flow:
 
 1. Connect PC and phone to the same network.
 2. Run `python main.py`.
-3. Scan the QR code shown in the desktop OpenCV waiting screen.
+3. Scan the QR code shown in the OpenCV waiting screen.
 4. Allow camera access on the phone.
-5. Confirm the phone page shows `WebSocket: connected` and increasing frame count.
-6. Aim the phone at the complete square gate marker.
-7. Hold `OK_Sign` while the detected board highlight is visible.
-8. Keep holding until the progress outline completes; the board registers and the game starts together.
+5. Aim the camera at the 150 mm gate marker.
+6. Hold `OK_Sign` for 2 seconds to register the board and start the run.
+7. During combat, hold an action gesture for 2 seconds.
+8. After defeat, hold `OK_Sign` for 2 seconds to restart the run without re-registering the board.
 
 Controls:
 
 ```text
-Q      quit
-R      reset game
+Q      quit program
+R      hard reset, including board registration
 D      toggle debug overlays
 ```
 
-## Gate Board Setup
+Normal gameplay after startup is intended to be gesture-only.
 
-Use a normal white A4 sheet, but draw one large gate marker at the center. The marker itself defines the playable board.
+## Gate Marker
+
+Use a white A4 sheet and draw one large gate marker. The marker itself is the game board.
 
 Recommended marker:
 
-- Draw a bold hollow black square, about `15 cm x 15 cm`.
-- Draw a hollow central ring inside the square.
-- Draw a short dark stem downward from the ring so the tracker can infer orientation.
-- Keep the inside of the square mostly white.
-- The outer square corners are the AR board corners.
+- Hollow black square, about `15 cm x 15 cm`.
+- Hollow central ring.
+- Short downward stem from the ring, ending before the bottom border.
+- Mostly white interior.
 
-The older A4 corner L-marker detector is kept only as a legacy comparison path in code. The default runtime detector is the single gate marker because it is easier to draw, more thematic, and provides stronger shape validation than four small hand-drawn corner marks.
+Why this marker is the default:
 
-## Board Tracking Design
+- The large square gives stable four-corner geometry.
+- The central ring rejects ordinary rectangles and table edges.
+- The short stem resolves orientation.
+- It is easier to draw and more immersive than a chessboard.
+- It is more stable than four small L markers.
 
-The board tracker borrows practical ideas from fiducial marker systems while keeping the marker simple enough to draw by hand.
+## Tracking Technique
 
-Runtime structure:
-
-```text
-gate-marker square contour detection
-  -> perspective-normalized patch
-  -> outer frame + central ring + stem validation
-  -> 150 mm square homography
-  -> optical-flow feature tracking after registration
-  -> periodic low-cost re-detection when confidence drops
-  -> AR rendering
-```
-
-Important details:
-
-- The gate marker is the board, so its four square corners directly define the AR plane.
-- The hollow square is easy for thresholding/contours, while the central ring and stem reject ordinary rectangular noise.
-- The stem resolves board orientation, so enemy/ground placement stays consistent when the paper rotates.
-- Registered tracking uses internal feature points, forward/backward optical-flow checks, and RANSAC homography.
-- Low-confidence results are rejected or held briefly to prevent the AR plane from jumping.
-
-References behind the tracker design:
-
-- STag: A Stable Fiducial Marker System
-- Designing Highly Reliable Fiducial Markers
-- Planar Fiducial Markers: A Comparative Study
-- Fiducial Markers for Pose Estimation: overview/comparison literature
-
-These were used as design inspiration for confidence scoring, temporal smoothing, partial occlusion handling, and re-detection after tracking loss.
-
-## AR Rendering
-
-Current AR rendering path:
+The board tracker is inspired by fiducial-marker papers such as STag and comparative marker studies, but uses a hand-drawable custom marker.
 
 ```text
-board corners / homography
-  -> solvePnP pose
-  -> trimesh loads GLB/GLTF/OBJ
-  -> pyrender renders textured model to RGBA
-  -> alpha blend onto OpenCV frame
+gate square contour candidates
+  -> canonical perspective-normalized patch
+  -> border continuity validation
+  -> central ring validation
+  -> direction stem validation
+  -> 150 mm board homography
+  -> solvePnP pose for 3D rendering
+  -> optical-flow tracking after registration
 ```
 
-Model behavior:
+Key techniques:
 
-- Enemy and ground models are set per enemy type.
-- Models should be placed under `assets/models/`.
-- Preferred format is `.glb`.
-- `.obj` remains supported as a fallback, but visual quality is lower.
-- GLB/GLTF Y-up assets are converted to the board's Z-up coordinate system.
-- Enemy models are rendered slightly above the ground and slowly bob up/down.
+- Downscaled detection for speed.
+- Quad geometry and frame-edge rejection.
+- Symbol validation in normalized marker space.
+- Confidence scoring and EMA smoothing.
+- LK optical flow with forward/backward validation.
+- RANSAC homography for tracked points.
+- Last-pose hold and periodic re-detection when confidence drops.
+- Tracking cache reset when phone resolution changes.
 
-Enemy model configuration lives in:
-
-```text
-game/wave_manager.py
-```
-
-Example:
-
-```python
-EnemyType(
-    name="Slime",
-    base_hp=50,
-    base_damage=6,
-    color=(50, 200, 50),
-    action_weights={"Attack": 0.50, "Defend": 0.30, "Skill": 0.20},
-    model_path=str(Path("assets") / "models" / "Slime.glb"),
-    ground_model_path=str(Path("assets") / "models" / "Grass.glb"),
-)
-```
-
-If `pyrender` cannot render a model, the renderer falls back to simpler OpenCV geometry.
-
-## Game Flow
-
-State flow:
-
-```text
-camera setup
-  -> OK hold board registration/start
-  -> wave intro
-  -> player turn
-  -> enemy turn
-  -> wave clear
-  -> next wave or defeat
-```
-
-Combat gestures:
+## Gestures
 
 ```text
 Fist       Strike
 Open_Palm  Guard
-V_Sign     ranged attack
-Gun_Sign   ranged attack
-OK_Sign    setup confirmation only
+V_Sign     Shot
+Gun_Sign   Shot
+OK_Sign    setup / restart only
 ```
 
-The run is endless. The goal is to reach the highest wave possible.
+`V_Sign` and `Gun_Sign` are trained separately for accuracy but map to the same Shot card in game. Shot gestures use stricter confidence and margin thresholds because accidental Shot actions are costly.
 
-## Gesture Data
-
-Recommended capture:
-
-```bash
-python vision/dataset_capture.py --mode both
-```
-
-This can save both:
-
-```text
-dataset/<class>/*.png
-dataset_landmarks/<class>/*.npy
-```
-
-The current runtime uses landmark vectors, not PNG image classification.
-
-Train landmark model:
-
-```bash
-python models/train.py --mode landmarks
-```
-
-Test model only:
+Test the gesture model independently:
 
 ```bash
 python models/test_gesture_model.py
 ```
 
-If gestures are poor in the tester, fix dataset/model quality before debugging the full game.
+## AR Rendering
 
-## Mobile Camera Notes
-
-Mobile browsers may block camera access on insecure LAN HTTP pages.
-
-For quick Android Chrome testing:
+Current rendering path:
 
 ```text
-chrome://flags/#unsafely-treat-insecure-origin-as-secure
+board homography -> solvePnP pose -> trimesh GLB/GLTF load
+  -> pyrender RGBA -> OpenCV alpha blend
 ```
 
-Add:
+Model notes:
+
+- Preferred model format: `.glb` in `assets/models/`.
+- `.obj` remains supported as a lower-quality fallback.
+- Enemy and ground model paths are configured in `game/wave_manager.py`.
+- Ground is rendered as a cached top-down texture and warped to the board plane.
+- Enemy is rendered above the board, slowly bobbing up and down.
+- Player model is not rendered; player information is AR-space UI.
+
+GLB/GLTF axis conversion:
 
 ```text
-http://<PC_IP>:8000
+game_x = asset_x
+game_y = asset_z
+game_z = asset_y
 ```
 
-Then restart Chrome.
+This converts common Y-up assets into the board's Z-up space. Model-specific facing direction may still require per-asset correction.
 
-If the phone page loads but WebSocket is disconnected:
+## Game Flow
 
-- check Windows Firewall for Python inbound access
-- confirm phone and PC are on the same network
-- confirm port `8765` is reachable
-- confirm the URL includes `?ws_port=8765`
+```text
+camera setup -> OK hold board registration/start -> wave intro
+  -> player card hold -> simultaneous reveal -> round resolution
+  -> next turn or wave clear -> reward select -> next wave
+  -> defeat -> OK hold run restart
+```
+
+Player base stats:
+
+```text
+Max HP: 100
+Attack power: 15
+Strike damage: attack_power + strike_bonus
+Shot damage: (attack_power + shot_bonus) * 2
+Guard heal: max(5, missing_hp * (10% + guard ratio bonus)) plus flat bonus
+```
+
+Difficulty:
+
+```text
+Wave N multiplier = 1.15 ** (N - 1)
+```
+
+Enemy HP and damage use this multiplier.
+
+## Rewards and Augments
+
+After each wave clear, three reward cards appear. Reward categories are:
+
+- `stat`
+- `heal`
+- `card_upgrade`
+- `augment`
+
+Already-owned augments are removed from future reward pools.
+
+Implemented augments:
+
+- Double Attack
+- Cull the Weak
+- Deep Rest
+- Counter Guard
+- Chicken Game
+- Vampire
+- Prepared
+- Insurance
+- First Strike
 
 ## Known Limitations
 
 - HTTPS/WSS is not implemented.
-- Camera calibration is approximate; pose quality depends on stable board homography.
-- `pyrender` offscreen rendering depends on local OpenGL support.
-- GLB animation clips are not played yet; only static first-frame model geometry/materials are used.
-- The gesture classifier still depends heavily on collected landmark dataset quality.
+- Camera calibration is approximate.
+- `pyrender` depends on local OpenGL/offscreen support.
+- GLB animation clips are not played yet.
+- Per-model pitch/roll/yaw correction is not yet stored in `EnemyType`.
+- Gesture quality depends on balanced landmark data.
+- Some Korean augment labels in code need encoding cleanup before final presentation.

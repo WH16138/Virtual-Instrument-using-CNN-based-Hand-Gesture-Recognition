@@ -1,23 +1,22 @@
-# VisionQuest Architecture
+﻿# VisionQuest Architecture
 
-Last updated: 2026-06-05
+Last updated: 2026-06-07
 
-## Purpose
+## Layer Overview
 
-VisionQuest is split into five main layers:
+VisionQuest is organized as:
 
 ```text
-network -> vision -> board tracking / AR -> game -> UI
+network -> web/mobile -> vision -> board tracking / AR -> game -> UI
 ```
 
-`main.py` wires those layers together and owns the real-time OpenCV loop.
+`main.py` is the composition root. It starts the servers, reads the latest camera frame, schedules vision work, updates game state, renders AR/UI, sends preview frames to the phone, and handles cleanup.
 
-## End-to-End Flow
+## End-to-End Runtime Flow
 
 ```text
 phone camera
-  -> web/app.js captures JPEG
-  -> ws://<pc-ip>:8765
+  -> web/app.js JPEG capture
   -> network.WebSocketFrameServer
   -> network.FrameReceiver
   -> main.py
@@ -25,272 +24,322 @@ phone camera
   -> vision.GestureDetector
   -> ar.PlaneTracker
   -> game.GameManager
-  -> ar.ARRenderer
-  -> ui.HUD
-  -> OpenCV window
+  -> ar.ARRenderer / PyrenderModelRenderer
+  -> ui.ActionCardRenderer / HUD / FloatingText
+  -> desktop OpenCV window
+  -> rendered phone preview
 ```
+
+The system keeps only the newest frame. This is intentional: low latency is more important than processing every frame.
 
 ## `network/`
 
 Responsibilities:
 
-- serve the mobile camera page
-- receive JPEG frames
-- keep latest frame only
-- expose frame freshness
-- generate QR connection URL
+- Serve the mobile camera page.
+- Receive binary JPEG frames.
+- Track client connection state.
+- Expose latest-frame freshness.
+- Generate QR URL.
+- Send rendered preview frames back to the phone.
 
 Important files:
 
-- `websocket_server.py`
-- `frame_receiver.py`
-- `qr_generator.py`
+- `network/websocket_server.py`
+- `network/frame_receiver.py`
+- `network/qr_generator.py`
 
-Design notes:
+Key techniques:
 
-- Do not queue many frames; real-time freshness matters more than completeness.
-- HTTP and WebSocket ports are separate.
-- QR URL carries the WebSocket port as `?ws_port=8765`.
+- HTTP server and WebSocket server run separately.
+- URL includes `?ws_port=8765` to keep frontend/backend port config synchronized.
+- Rendered preview JPEG encoding runs in a background thread.
+- Preview output is rate-limited and downscaled.
 
 ## `web/`
 
 Responsibilities:
 
-- request phone camera permission
-- show connection status
-- downscale camera frames
-- send frames to PC WebSocket
-- reconnect after disconnection
+- Request phone camera permission.
+- Capture frames through a reusable canvas.
+- Send JPEG frames to PC.
+- Show connection/frame status.
+- Receive rendered preview frames from PC.
+- Reconnect after WebSocket close/error.
 
 Important files:
 
-- `index.html`
-- `app.js`
+- `web/index.html`
+- `web/app.js`
 
 ## `vision/`
 
 Responsibilities:
 
-- run MediaPipe hand landmark detection
-- normalize hand landmarks
-- classify gestures
-- support dataset capture
+- Hand landmark detection.
+- Gesture feature construction.
+- Gesture classification.
+- Dataset capture for landmark and CNN paths.
 
 Important files:
 
-- `hand_tracker.py`
-- `gesture_detector.py`
-- `dataset_capture.py`
-- `dataset_capture_both.py`
+- `vision/hand_tracker.py`
+- `vision/gesture_detector.py`
+- `vision/gesture_features.py`
+- `vision/dataset_capture_both.py`
 
-Gesture contract:
+Gesture output contract:
 
 ```python
 {
     "gesture": str,
     "confidence": float,
     "smoothed_gesture": str,
+    "margin": float,
+    "second_confidence": float,
 }
 ```
 
-Current gesture mapping:
-
-```text
-Fist       Strike
-Open_Palm  Guard
-V_Sign     ranged attack
-Gun_Sign   ranged attack
-OK_Sign    setup confirmation only
-```
+Gesture filtering uses high thresholds for entering a gesture, lower thresholds for maintaining it, and stricter thresholds for Shot gestures (`V_Sign`, `Gun_Sign`).
 
 ## `models/`
 
 Responsibilities:
 
-- train gesture classifier
-- test model independently
-- store model artifacts
+- Train gesture classifiers.
+- Test gesture model independently.
+- Store runtime artifacts.
 
 Important files:
 
-- `train.py`
-- `train_landmarks.py`
-- `train_cnn.py`
-- `test_gesture_model.py`
-- `gesture_model.pkl`
-- `hand_landmarker.task`
+- `models/train.py`
+- `models/train_landmarks.py`
+- `models/train_cnn.py`
+- `models/test_gesture_model.py`
+- `models/gesture_model.pkl`
+- `models/hand_landmarker.task`
 
-Runtime model format:
+Runtime uses landmark vectors:
 
 ```text
-21 landmarks x (x, y, z) = 63 float32 values
+21 landmarks x (x, y, z) = 63 values
 ```
+
+The project keeps PNG/CNN and landmark datasets separate so a CNN version remains possible later.
 
 ## `ar/plane_tracker.py`
 
-Responsibilities:
+Default mode:
 
-- detect A4 board
-- detect dark corner marks
-- estimate homography
-- smooth homography
-- recover missing markers
-- reject low-confidence tracking
-
-Core flow:
-
-```text
-detect corner marks
-  -> assign TL/TR/BR/BL marker slots
-  -> compute homography
-  -> estimate reprojection error/confidence
-  -> smooth accepted H
-  -> return corners, marker predictions, debug state
+```python
+PlaneTracker(detector_mode="door_marker")
 ```
 
-Partial occlusion rule:
-
-- Observed markers are used for measurement.
-- Missing marker screen positions are predicted from known A4 world marker coordinates and current homography.
-- Last screen-space marker positions should not be used as the final missing-marker display/AR source.
-
-## `ar/homography.py`
-
 Responsibilities:
 
-- direct normalized DLT homography
-- point projection
-- grid drawing helper
+- Detect the 150 mm gate marker.
+- Validate marker symbol structure.
+- Estimate board homography.
+- Smooth accepted homographies.
+- Track registered board features.
+- Re-detect after tracking loss.
+- Keep legacy L-corner marker code as a fallback/comparison path.
 
-This file intentionally keeps core homography math project-owned instead of delegating the whole calculation to a high-level OpenCV wrapper.
+Primary gate-marker detection:
+
+```text
+threshold / contour candidates
+  -> quadrilateral filtering
+  -> canonical marker patch
+  -> outer border continuity
+  -> central ring validation
+  -> direction stem validation
+  -> confidence score
+  -> board homography
+```
+
+Registered tracking:
+
+```text
+last feature points
+  -> LK optical flow
+  -> forward/backward error check
+  -> RANSAC homography
+  -> reprojection/confidence check
+  -> smoothing or short last-pose hold
+```
+
+Robustness details:
+
+- Detection is downscaled for performance.
+- Frame-edge-like quads are rejected.
+- Marker validation happens after perspective normalization.
+- Resolution/orientation changes clear frame-size-dependent caches.
+- Re-detection interval becomes shorter when confidence is low.
 
 ## `ar/ar_renderer.py`
 
 Responsibilities:
 
-- draw gate-board floor/grid
-- derive approximate camera pose with `solvePnP`
-- render ground and enemy models
-- apply fallback OpenCV geometry if textured rendering fails
+- Estimate camera intrinsics from homography samples.
+- Build `solvePnP` pose from board corners.
+- Draw fallback floor/primitive geometry.
+- Warp cached ground texture onto the board.
+- Render enemy GLB through `PyrenderModelRenderer`.
+- Hide enemy during wave clear and reward selection.
 
-Current rendering policy:
+Current policy:
 
 - Player model is not rendered.
-- Decorative board corner pillars are not rendered.
-- Ground model is centered on the 150 mm gate board.
-- Enemy model is above the ground and slowly bobs.
+- Corner pillars are removed.
+- Ground model is centered on the board and scaled up to cover the marker.
+- Enemy model size is relative to board side length.
+- Enemy render is downscaled and reused between frames for performance.
 
 ## `ar/pyrender_renderer.py`
 
 Responsibilities:
 
-- load GLB/GLTF/OBJ through `trimesh`
-- preload configured enemy and ground assets in the background
-- preserve GLB mesh/material structure where possible
-- normalize model size
-- convert GLB/GLTF Y-up assets into the board's Z-up coordinate system
-- render RGBA through `pyrender.OffscreenRenderer`
-- alpha blend into the OpenCV frame
+- Load GLB/GLTF/OBJ with `trimesh`.
+- Preload meshes in a background thread.
+- Normalize mesh bounds and lift bottom to local `z=0`.
+- Convert GLB/GLTF Y-up assets to board Z-up.
+- Render RGBA through `pyrender.OffscreenRenderer`.
+- Alpha-blend RGBA into OpenCV BGR frame.
+- Render/caches top-down ground textures.
 
-Rendering pipeline:
+Axis conversion:
 
 ```text
-solvePnP rvec/tvec
-  -> pyrender IntrinsicsCamera
-  -> offscreen RGBA
-  -> OpenCV BGR alpha blend
+game_x = asset_x
+game_y = asset_z
+game_z = asset_y
 ```
 
-Fallback behavior:
+Camera conversion:
 
-- If `pyrender`, `trimesh`, OpenGL, or model loading fails, `ARRenderer` falls back to simpler OpenCV model/primitive rendering.
-- If a preloaded model is still loading, the frame does not wait for it; fallback rendering is used until the cache is ready.
+```text
+OpenCV camera -> OpenGL camera
+cv_to_gl = diag(1, -1, -1, 1)
+```
+
+Only board-Z yaw is currently exposed. Per-model axis correction is a recommended next step.
 
 ## `game/`
 
 Responsibilities:
 
-- wave progression
-- player/enemy stats
-- turn timing
-- action resolution
-- event queue
+- Player and enemy runtime state.
+- Wave selection and difficulty.
+- Simultaneous card battle rules.
+- Reward generation/application.
+- Augment hooks.
+- Event queue for UI/effects.
 
 Important files:
 
-- `wave_manager.py`
-- `game_manager.py`
-- `battle_system.py`
-- `enemy.py`
-- `player.py`
-- `skills.py`
+- `game/game_manager.py`
+- `game/battle_system.py`
+- `game/wave_manager.py`
+- `game/enemy.py`
+- `game/player.py`
+- `game/reward_system.py`
+- `game/augment_system.py`
+- `game/skills.py`
 
-Enemy type fields:
+Main battle states:
+
+```text
+WAITING -> WAVE_INTRO -> PLAYER_TURN -> ROUND_REVEAL
+  -> PLAYER_TURN / WAVE_CLEAR / DEFEAT
+WAVE_CLEAR -> REWARD_SELECT -> WAVE_INTRO
+```
+
+Timing:
+
+- Setup OK hold: 2.0 seconds.
+- Player action hold: 2.0 seconds.
+- Round reveal: 1.35 seconds.
+- Reward hold: 2.0 seconds.
+- Defeat restart OK hold: 2.0 seconds.
+
+## Enemy and Wave Data
+
+`EnemyType` fields:
 
 ```python
-EnemyType(
-    name=str,
-    base_hp=int,
-    base_damage=int,
-    color=tuple,
-    action_weights=dict,
-    model_path=str | None,
-    ground_model_path=str | None,
-)
+name: str
+base_hp: int
+base_damage: int
+color: tuple
+full_health_action_weights: dict
+zero_health_action_weights: dict
+action_weight_random_delta: float
+min_wave: int
+model_path: str | None
+ground_model_path: str | None
 ```
+
+Difficulty:
+
+```text
+global_difficulty_multiplier = 1.15 ** (current_wave - 1)
+```
+
+Dragon currently has `min_wave=4`.
 
 ## `ui/`
 
 Responsibilities:
 
-- HUD panels
-- battle status
-- gesture/action display
-- floating combat feedback
-- debug-friendly overlays when enabled
+- Setup HUD and defeat HUD.
+- AR-space player panel.
+- AR-space action cards.
+- AR-space reward cards.
+- Enemy HP/action probability hint.
+- Gesture probability panel.
+- Augment badges.
+- Floating combat feedback.
 
 Important files:
 
-- `hud.py`
-- `damage_text.py`
+- `ui/hud.py`
+- `ui/action_cards.py`
+- `ui/damage_text.py`
 
-## Main Loop State
+UI approach:
 
-Important flags in `main.py`:
+- Gameplay panels/cards are rendered as high-resolution RGBA images.
+- They are projected or warped using the active homography.
+- Sharp UI is drawn after AR rendering for both desktop and phone preview.
 
-- `plane_registered`: gate board has been registered
-- `game_started`: battle has started
-- `debug_mode`: debug overlays are visible
-- `freshness_grace_until`: prevents short processing pauses from returning to QR setup
-- `setup_gesture_counter`: stable setup `OK_Sign` count
-
-Expected main loop order:
+## Main Loop Order
 
 ```text
 read latest fresh frame
-  -> detect hands/gestures on interval
-  -> track gate board
-  -> complete setup when OK hold reaches the threshold
-  -> update game state
-  -> render AR
-  -> render HUD/debug
-  -> process keyboard input
+  -> update gesture recognition on interval
+  -> track board
+  -> complete OK setup/start if needed
+  -> process gesture card or reward input
+  -> update game timers/state
+  -> consume events
+  -> render AR ground/enemy
+  -> draw tracking attention/debug if needed
+  -> build phone and desktop display frames
+  -> draw sharp UI overlays
+  -> publish phone preview
+  -> handle Q/D/R keys
 ```
 
 ## Debug Policy
 
-Before game start:
+Before registration, setup overlays are visible. During gameplay, debug overlays are hidden unless tracking needs attention. Press `D` for full diagnostics:
 
-- board highlight and diagnostics are visible to help registration
-
-After game start:
-
-- debug overlays are hidden by default
-- press `D` to toggle:
-  - A4 outline
-  - marker circles/X predictions
-  - homography confidence text
-  - FPS/hand count diagnostics
+- marker candidates
+- board outline
+- homography/tracking text
+- hand overlay
+- FPS/hand count
 
 ## Asset Policy
 
@@ -298,19 +347,13 @@ Preferred:
 
 ```text
 assets/models/*.glb
+assets/cards/*.png
 ```
 
-Supported:
+Supported model formats:
 
 ```text
-.glb
-.gltf
-.obj
+.glb .gltf .obj
 ```
 
-Notes:
-
-- `.glb` is preferred for material/texture preservation.
-- `.obj` is accepted but visual quality is limited.
-- Real animation playback is not implemented yet.
-- Current movement is transform-based, such as enemy bobbing.
+`.glb` is preferred because materials and textures survive better than OBJ/MTL in the current path.
