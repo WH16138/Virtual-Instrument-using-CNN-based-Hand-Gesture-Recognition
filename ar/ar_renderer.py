@@ -17,12 +17,14 @@ class ARRenderer:
         self.max_homography_samples = 18
         self.model_loader = ModelLoader()
         self.pbr_renderer = PyrenderModelRenderer()
-        self.ground_model_scale = 1.04
+        self.ground_model_scale = 1.22
         self.ground_height_offset = -1.0
-        self.enemy_model_scale = 0.72
-        self.enemy_fallback_scale = 0.52
-        self.enemy_render_scale = 0.58
+        self.enemy_model_scale = 0.82
+        self.enemy_fallback_scale = 0.58
+        self.enemy_render_scale = 0.42
         self.ground_texture_size = 512
+        self.enemy_render_interval = 3
+        self._render_frame_index = 0
 
     def set_plane_size(self, plane_size):
         self.plane_width = float(plane_size[0])
@@ -70,21 +72,27 @@ class ARRenderer:
         enemy_float_offset = board_side * 0.08 + np.sin(time.monotonic() * 1.8) * board_side * 0.035
 
         ground_drawn = self._draw_ground_texture(frame, H, ground_model_path, ground_pos, alpha=0.96)
-        enemy_drawn = self.pbr_renderer.render_models(
-            frame,
-            pose,
-            [
-                {
-                    "model_path": enemy_model_path,
-                    "board_pos": enemy_pos,
-                    "size": enemy_model_size,
-                    "height_offset": enemy_float_offset,
-                    "yaw_degrees": 180.0,
-                    "alpha": 1.0,
-                },
-            ],
-            render_scale=self.enemy_render_scale,
-        )[0]
+        self._render_frame_index += 1
+        should_render_enemy = self._render_frame_index % max(1, self.enemy_render_interval) == 0
+        enemy_drawn = False
+        if not should_render_enemy:
+            enemy_drawn = self.pbr_renderer.blend_last_overlay(frame)
+        if not enemy_drawn:
+            enemy_drawn = self.pbr_renderer.render_models(
+                frame,
+                pose,
+                [
+                    {
+                        "model_path": enemy_model_path,
+                        "board_pos": enemy_pos,
+                        "size": enemy_model_size,
+                        "height_offset": enemy_float_offset,
+                        "yaw_degrees": 180.0,
+                        "alpha": 1.0,
+                    },
+                ],
+                render_scale=self.enemy_render_scale,
+            )[0]
 
         if not ground_drawn:
             self._draw_ground_platform(frame, H, ground_pos, enemy_color)
@@ -151,31 +159,45 @@ class ARRenderer:
         if dst is None:
             return False
 
-        tex_h, tex_w = texture.shape[:2]
+        return self._warp_rgba_to_quad(frame, texture, dst, alpha)
+
+    def _warp_rgba_to_quad(self, frame, rgba, dst, global_alpha=1.0):
+        if rgba is None or rgba.ndim != 3 or rgba.shape[2] < 4:
+            return False
+        dst = np.asarray(dst, dtype=np.float32)
+        x1 = max(0, int(np.floor(np.min(dst[:, 0]))))
+        y1 = max(0, int(np.floor(np.min(dst[:, 1]))))
+        x2 = min(frame.shape[1], int(np.ceil(np.max(dst[:, 0]))) + 1)
+        y2 = min(frame.shape[0], int(np.ceil(np.max(dst[:, 1]))) + 1)
+        if x2 <= x1 or y2 <= y1:
+            return False
+
+        tex_h, tex_w = rgba.shape[:2]
         src = np.asarray(
             [[0, 0], [tex_w - 1, 0], [tex_w - 1, tex_h - 1], [0, tex_h - 1]],
             dtype=np.float32,
         )
-        transform = cv2.getPerspectiveTransform(src, dst.astype(np.float32))
+        local_dst = dst - np.asarray([x1, y1], dtype=np.float32)
+        transform = cv2.getPerspectiveTransform(src, local_dst)
         warped = cv2.warpPerspective(
-            texture,
+            rgba,
             transform,
-            (frame.shape[1], frame.shape[0]),
+            (x2 - x1, y2 - y1),
             flags=cv2.INTER_LINEAR,
             borderMode=cv2.BORDER_CONSTANT,
             borderValue=(0, 0, 0, 0),
         )
-        return self._alpha_blend_rgba(frame, warped, alpha)
+        return self._alpha_blend_rgba(frame[y1:y2, x1:x2], warped, global_alpha)
 
-    def _alpha_blend_rgba(self, frame, rgba, global_alpha=1.0):
-        if rgba is None or rgba.ndim != 3 or rgba.shape[2] < 4:
+    def _alpha_blend_rgba(self, frame_roi, rgba, global_alpha=1.0):
+        if rgba is None or rgba.ndim != 3 or rgba.shape[2] < 4 or frame_roi.size == 0:
             return False
         alpha = (rgba[:, :, 3:4].astype(np.float32) / 255.0) * float(global_alpha)
         if float(np.max(alpha)) <= 0.0:
             return False
         bgr = rgba[:, :, :3].astype(np.float32)[:, :, ::-1]
-        blended = bgr * alpha + frame.astype(np.float32) * (1.0 - alpha)
-        np.copyto(frame, blended.astype(np.uint8))
+        blended = bgr * alpha + frame_roi.astype(np.float32) * (1.0 - alpha)
+        np.copyto(frame_roi, blended.astype(np.uint8))
         return True
 
     def _draw_corner_pillars(self, frame, H, pose):

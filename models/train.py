@@ -23,6 +23,11 @@ def parse_args():
     parser.add_argument("--max-iter", type=int, default=None, help="Landmark MLP max iterations.")
     parser.add_argument("--validation-size", type=float, default=0.15, help="Validation split ratio.")
     parser.add_argument("--test-size", type=float, default=0.15, help="Test split ratio.")
+    parser.add_argument(
+        "--no-cnn-mirror-augmentation",
+        action="store_true",
+        help="Disable deterministic horizontal mirror samples when --mode cnn.",
+    )
     return parser.parse_args()
 
 
@@ -48,6 +53,7 @@ def main():
     trainer = CnnGestureModelTrainer(
         dataset_dir=args.dataset or "dataset",
         model_output_path=args.output or "models/gesture_model_cnn.keras",
+        mirror_training=not args.no_cnn_mirror_augmentation,
     )
     trainer.train(
         epochs=args.epochs or 50,

@@ -7,9 +7,16 @@ import numpy as np
 from ar.homography import HomographyEstimator
 from game.battle_system import BattleState
 
+try:
+    from PIL import Image, ImageDraw, ImageFont
+except ImportError:
+    Image = None
+    ImageDraw = None
+    ImageFont = None
+
 
 class ActionCardRenderer:
-    """AR-space action card and short combat effect renderer."""
+    """AR-space action cards, attached status panels, and combat effects."""
 
     ACTIONS = [
         {
@@ -43,6 +50,8 @@ class ActionCardRenderer:
 
     def __init__(self):
         self.card_cache = {}
+        self.panel_cache = {}
+        self.font_cache = {}
         self.projectiles = []
         self.guard_effects = []
         self.seen_event_ids = set()
@@ -61,6 +70,9 @@ class ActionCardRenderer:
         can_select = battle_state == BattleState.PLAYER_TURN and game_state.get("can_act", False)
         slots = self._card_slots(plane_size, selection if can_select else {})
 
+        self._draw_player_info(frame, H, plane_size, game_state)
+        self._draw_enemy_hp(frame, H, plane_size, game_state, enemy_pos)
+
         if can_select:
             for action in self.ACTIONS:
                 slot = slots[action["action"]]
@@ -73,12 +85,12 @@ class ActionCardRenderer:
 
     def _card_slots(self, plane_size, selection):
         plane_width, plane_height = float(plane_size[0]), float(plane_size[1])
-        card_w = min(56.0, plane_width * 0.24)
+        card_w = min(52.0, plane_width * 0.225)
         card_h = card_w * 1.34
         gap = card_w * 0.20
         total_w = card_w * 3 + gap * 2
         start_x = plane_width * 0.5 - total_w * 0.5
-        y = plane_height + card_h * 0.18
+        y = plane_height + 48.0
         selected_action = selection.get("action") if selection.get("active") else None
 
         slots = {}
@@ -99,6 +111,134 @@ class ActionCardRenderer:
                 "color": action["color"],
             }
         return slots
+
+    def _draw_player_info(self, frame, H, plane_size, game_state):
+        player = game_state.get("player", {})
+        max_hp = max(int(player.get("max_hp", 1)), 1)
+        hp = max(0, int(player.get("hp", 0)))
+        ratio = hp / float(max_hp)
+        image = self._player_info_image(hp, max_hp, ratio)
+
+        plane_width, plane_height = float(plane_size[0]), float(plane_size[1])
+        rect = [
+            (5.0, plane_height + 8.0),
+            (plane_width * 0.64, plane_height + 8.0),
+            (plane_width * 0.64, plane_height + 39.0),
+            (5.0, plane_height + 39.0),
+        ]
+        dst = self._project_points(rect, H)
+        if dst is None:
+            return
+        self._warp_rgba(frame, image, dst)
+        cv2.polylines(frame, [dst.astype(np.int32)], True, (210, 190, 120), 1, cv2.LINE_AA)
+
+    def _player_info_image(self, hp, max_hp, ratio):
+        key = (int(hp), int(max_hp), int(round(ratio * 100)))
+        cached = self.panel_cache.get(key)
+        if cached is not None:
+            return cached
+
+        width, height = 420, 132
+        if Image is None:
+            image = np.zeros((height, width, 4), dtype=np.uint8)
+            image[:, :, :3] = (24, 20, 18)
+            image[:, :, 3] = 210
+            cv2.putText(image, "PLAYER", (24, 42), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (245, 238, 210, 255), 2, cv2.LINE_AA)
+            self._draw_bgra_bar(image, 24, 72, width - 48, 24, ratio, (60, 190, 90), f"HP {hp}/{max_hp}")
+            self.panel_cache[key] = image
+            return image
+
+        canvas = Image.new("RGBA", (width, height), (12, 11, 18, 208))
+        draw = ImageDraw.Draw(canvas)
+        draw.rectangle((4, 4, width - 5, height - 5), outline=(205, 185, 118, 235), width=3)
+        draw.rectangle((14, 14, width - 15, height - 15), outline=(80, 66, 46, 180), width=1)
+
+        title_font = self._font(32, bold=True)
+        value_font = self._font(18, bold=False)
+        draw.text((24, 20), "\uD50C\uB808\uC774\uC5B4", font=title_font, fill=(248, 238, 205, 255))
+
+        bar_x, bar_y, bar_w, bar_h = 24, 74, width - 48, 24
+        draw.rectangle((bar_x, bar_y, bar_x + bar_w, bar_y + bar_h), fill=(34, 32, 40, 245), outline=(210, 190, 140, 255), width=2)
+        draw.rectangle((bar_x + 2, bar_y + 2, bar_x + 2 + int((bar_w - 4) * ratio), bar_y + bar_h - 2), fill=(72, 196, 92, 255))
+        draw.text((bar_x + 10, bar_y + 1), f"HP {hp}/{max_hp}", font=value_font, fill=(255, 252, 235, 255))
+
+        rgba = np.asarray(canvas, dtype=np.uint8)
+        bgra = rgba[:, :, [2, 1, 0, 3]].copy()
+        self.panel_cache[key] = bgra
+        return bgra
+
+    def _font(self, size, bold=False):
+        key = (size, bold)
+        cached = self.font_cache.get(key)
+        if cached is not None:
+            return cached
+        candidates = []
+        if bold:
+            candidates.append(Path("C:/Windows/Fonts/malgunbd.ttf"))
+        candidates.extend(
+            [
+                Path("C:/Windows/Fonts/malgun.ttf"),
+                Path("C:/Windows/Fonts/gulim.ttc"),
+            ]
+        )
+        for path in candidates:
+            if path.exists():
+                try:
+                    font = ImageFont.truetype(str(path), size)
+                    self.font_cache[key] = font
+                    return font
+                except Exception:
+                    pass
+        font = ImageFont.load_default()
+        self.font_cache[key] = font
+        return font
+
+    def _draw_bgra_bar(self, image, x, y, w, h, ratio, color, label):
+        ratio = max(0.0, min(1.0, ratio))
+        cv2.rectangle(image, (x, y), (x + w, y + h), (34, 32, 40, 245), -1)
+        cv2.rectangle(image, (x + 2, y + 2), (x + 2 + int((w - 4) * ratio), y + h - 2), color + (255,), -1)
+        cv2.rectangle(image, (x, y), (x + w, y + h), (210, 190, 140, 255), 2, cv2.LINE_AA)
+        cv2.putText(image, label, (x + 10, y + h - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.62, (255, 252, 235, 255), 1, cv2.LINE_AA)
+
+    def _draw_enemy_hp(self, frame, H, plane_size, game_state, enemy_pos):
+        enemy = game_state.get("enemy", {})
+        max_hp = max(int(enemy.get("max_hp", 1)), 1)
+        hp = max(0, int(enemy.get("hp", 0)))
+        ratio = hp / float(max_hp)
+        point = HomographyEstimator.transform_point(enemy_pos, H)
+        if point is None:
+            return
+
+        scale = self._local_pixel_scale(H, enemy_pos)
+        bar_w = int(np.clip(scale * float(plane_size[0]) * 0.58, 84, 168))
+        bar_h = int(np.clip(scale * 8.0, 9, 15))
+        y_offset = int(np.clip(scale * 48.0, 46, 116))
+        cx = int(round(point[0]))
+        cy = int(round(point[1])) - y_offset
+        x1 = cx - bar_w // 2
+        y1 = cy - bar_h // 2
+        x2 = x1 + bar_w
+        y2 = y1 + bar_h
+
+        x1 = max(4, min(frame.shape[1] - bar_w - 4, x1))
+        x2 = x1 + bar_w
+        y1 = max(22, min(frame.shape[0] - bar_h - 4, y1))
+        y2 = y1 + bar_h
+
+        bg_x1 = max(0, x1 - 8)
+        bg_y1 = max(0, y1 - 22)
+        bg_x2 = min(frame.shape[1], x2 + 8)
+        bg_y2 = min(frame.shape[0], y2 + 7)
+        if bg_x2 > bg_x1 and bg_y2 > bg_y1:
+            roi = frame[bg_y1:bg_y2, bg_x1:bg_x2]
+            overlay = roi.copy()
+            cv2.rectangle(overlay, (0, 0), (bg_x2 - bg_x1 - 1, bg_y2 - bg_y1 - 1), (8, 8, 14), -1)
+            cv2.addWeighted(overlay, 0.55, roi, 0.45, 0, roi)
+        name = str(enemy.get("name", "Enemy"))[:18]
+        cv2.putText(frame, name, (x1, y1 - 7), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (245, 235, 210), 1, cv2.LINE_AA)
+        cv2.rectangle(frame, (x1, y1), (x2, y2), (38, 36, 44), -1)
+        cv2.rectangle(frame, (x1, y1), (x1 + int(bar_w * ratio), y2), tuple(enemy.get("color", (70, 70, 210))), -1)
+        cv2.rectangle(frame, (x1, y1), (x2, y2), (220, 205, 150), 1, cv2.LINE_AA)
 
     def _draw_board_card(self, frame, H, slot, action, selection):
         image = self._load_card(action["path"], action["label"], action["color"])
@@ -134,7 +274,8 @@ class ActionCardRenderer:
             return
 
         image = self._load_card(self.ENEMY_CARD_PATHS.get(action), str(action or "ACTION").upper(), (80, 80, 255))
-        center = (int(point[0]), int(point[1] - 120))
+        scale = self._local_pixel_scale(H, enemy_pos)
+        center = (int(point[0]), int(point[1] - np.clip(scale * 86.0, 90, 160)))
         card_w, card_h = 92, 124
         x1 = center[0] - card_w // 2
         y1 = center[1] - card_h // 2
@@ -249,14 +390,43 @@ class ActionCardRenderer:
             return None
         return np.asarray(projected, dtype=np.float32)
 
+    def _local_pixel_scale(self, H, center):
+        cx, cy = center
+        p0 = np.asarray(HomographyEstimator.transform_point((cx, cy), H), dtype=np.float32)
+        px = np.asarray(HomographyEstimator.transform_point((cx + 10.0, cy), H), dtype=np.float32)
+        py = np.asarray(HomographyEstimator.transform_point((cx, cy + 10.0), H), dtype=np.float32)
+        if p0.shape != (2,) or px.shape != (2,) or py.shape != (2,):
+            return 1.0
+        scale = (np.linalg.norm(px - p0) + np.linalg.norm(py - p0)) / 20.0
+        return float(max(0.45, min(3.5, scale)))
+
     def _warp_rgba(self, frame, rgba, dst):
+        if rgba is None or rgba.ndim != 3 or rgba.shape[2] < 4:
+            return
+        dst = np.asarray(dst, dtype=np.float32)
+        x1 = max(0, int(np.floor(np.min(dst[:, 0]))))
+        y1 = max(0, int(np.floor(np.min(dst[:, 1]))))
+        x2 = min(frame.shape[1], int(np.ceil(np.max(dst[:, 0]))) + 1)
+        y2 = min(frame.shape[0], int(np.ceil(np.max(dst[:, 1]))) + 1)
+        if x2 <= x1 or y2 <= y1:
+            return
+
         src_h, src_w = rgba.shape[:2]
         src = np.asarray([[0, 0], [src_w - 1, 0], [src_w - 1, src_h - 1], [0, src_h - 1]], dtype=np.float32)
-        matrix = cv2.getPerspectiveTransform(src, dst.astype(np.float32))
-        warped = cv2.warpPerspective(rgba, matrix, (frame.shape[1], frame.shape[0]), flags=cv2.INTER_LINEAR)
+        local_dst = dst - np.asarray([x1, y1], dtype=np.float32)
+        matrix = cv2.getPerspectiveTransform(src, local_dst)
+        warped = cv2.warpPerspective(
+            rgba,
+            matrix,
+            (x2 - x1, y2 - y1),
+            flags=cv2.INTER_LINEAR,
+            borderMode=cv2.BORDER_CONSTANT,
+            borderValue=(0, 0, 0, 0),
+        )
         alpha = warped[:, :, 3:4].astype(np.float32) / 255.0
         if np.max(alpha) <= 0.0:
             return
+        roi = frame[y1:y2, x1:x2]
         color = warped[:, :, :3].astype(np.float32)
-        blended = color * alpha + frame.astype(np.float32) * (1.0 - alpha)
-        np.copyto(frame, blended.astype(np.uint8))
+        blended = color * alpha + roi.astype(np.float32) * (1.0 - alpha)
+        np.copyto(roi, blended.astype(np.uint8))

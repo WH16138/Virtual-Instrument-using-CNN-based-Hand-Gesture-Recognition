@@ -19,11 +19,12 @@ from vision.gesture_features import GESTURE_CLASSES
 class CnnGestureModelTrainer:
     """Train a CNN classifier from legacy PNG hand-crop images."""
 
-    def __init__(self, dataset_dir="dataset", model_output_path="models/gesture_model_cnn.keras"):
+    def __init__(self, dataset_dir="dataset", model_output_path="models/gesture_model_cnn.keras", mirror_training=True):
         self.dataset_dir = Path(dataset_dir)
         self.model_output_path = Path(model_output_path)
         self.gesture_classes = GESTURE_CLASSES
         self.class_to_idx = {gesture: idx for idx, gesture in enumerate(self.gesture_classes)}
+        self.mirror_training = bool(mirror_training)
 
     def load_dataset(self):
         x_values = []
@@ -96,6 +97,16 @@ class CnnGestureModelTrainer:
         )
         return x_train, x_val, x_test, y_train, y_val, y_test
 
+    def augment_training_set(self, x_train, y_train):
+        """Add deterministic left/right mirrored samples only to the training split."""
+        if not self.mirror_training or len(x_train) == 0:
+            return x_train, y_train
+
+        mirrored = np.ascontiguousarray(x_train[:, :, ::-1, :])
+        augmented_x = np.concatenate([x_train, mirrored], axis=0).astype(np.float32)
+        augmented_y = np.concatenate([y_train, y_train], axis=0).astype(np.int64)
+        return augmented_x, augmented_y
+
     def train(self, epochs=50, batch_size=16, validation_size=0.15, test_size=0.15):
         x_values, y_values = self.load_dataset()
         if len(x_values) == 0:
@@ -112,6 +123,10 @@ class CnnGestureModelTrainer:
             test_size=test_size,
         )
         print(f"Split sizes: train={len(x_train)}, validation={len(x_val)}, test={len(x_test)}")
+
+        x_train, y_train = self.augment_training_set(x_train, y_train)
+        if self.mirror_training:
+            print(f"Mirror augmentation: train samples doubled to {len(x_train)}")
 
         augmentation = keras.Sequential(
             [
@@ -181,12 +196,21 @@ def parse_args():
     parser.add_argument("--batch-size", type=int, default=16)
     parser.add_argument("--validation-size", type=float, default=0.15)
     parser.add_argument("--test-size", type=float, default=0.15)
+    parser.add_argument(
+        "--no-mirror-augmentation",
+        action="store_true",
+        help="Disable deterministic horizontal mirror samples in the training split.",
+    )
     return parser.parse_args()
 
 
 def main():
     args = parse_args()
-    trainer = CnnGestureModelTrainer(args.dataset, args.output)
+    trainer = CnnGestureModelTrainer(
+        args.dataset,
+        args.output,
+        mirror_training=not args.no_mirror_augmentation,
+    )
     trainer.train(
         epochs=args.epochs,
         batch_size=args.batch_size,

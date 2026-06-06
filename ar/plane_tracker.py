@@ -42,6 +42,9 @@ class PlaneTracker:
         self.last_door_image_points = None
         self.last_door_world_points = None
         self.door_detection_max_dim = 640
+        self.door_min_area_ratio = 0.012
+        self.door_max_area_ratio = 0.78
+        self.door_frame_edge_margin = 5
         self.door_canonical_size = 288
         self.door_redetection_interval = 8
         self.door_stable_redetection_interval = 18
@@ -358,10 +361,36 @@ class PlaneTracker:
                 return
         candidates.append((corners, float(score)))
 
+    def _quad_is_frame_boundary_like(self, corners, image_shape):
+        corners = np.asarray(corners, dtype=np.float32)
+        if corners.shape != (4, 2) or not np.isfinite(corners).all():
+            return True
+
+        height, width = image_shape[:2]
+        image_area = max(float(height * width), 1.0)
+        area_ratio = self._polygon_area(corners) / image_area
+        if area_ratio >= self.door_max_area_ratio:
+            return True
+
+        margin = max(float(self.door_frame_edge_margin), min(float(width), float(height)) * 0.006)
+        min_x = float(np.min(corners[:, 0]))
+        max_x = float(np.max(corners[:, 0]))
+        min_y = float(np.min(corners[:, 1]))
+        max_y = float(np.max(corners[:, 1]))
+        touches = (
+            int(min_x <= margin)
+            + int(max_x >= float(width - 1) - margin)
+            + int(min_y <= margin)
+            + int(max_y >= float(height - 1) - margin)
+        )
+        if touches >= 3:
+            return True
+        return bool(area_ratio >= 0.58 and touches >= 2)
+
     def _door_candidate_corners(self, contour, image_shape):
         area = float(cv2.contourArea(contour))
         image_area = float(image_shape[0] * image_shape[1])
-        if area < max(900.0, image_area * 0.012) or area > image_area * 1.03:
+        if area < max(900.0, image_area * self.door_min_area_ratio) or area > image_area * self.door_max_area_ratio:
             return None, 0.0
 
         perimeter = cv2.arcLength(contour, True)
@@ -378,11 +407,15 @@ class PlaneTracker:
         ordered = self._order_quad_points(corners)
         if ordered is None or not self._is_convex_quad(ordered):
             return None, 0.0
+        if self._quad_is_frame_boundary_like(ordered, image_shape):
+            return None, 0.0
         boundary = contour.reshape(-1, 2).astype(np.float32)
         refined = self._refine_quad_from_boundary(boundary, ordered) if len(boundary) >= 24 else None
         if refined is not None:
             refined = self._order_quad_points(refined)
             if refined is not None and self._is_convex_quad(refined):
+                if self._quad_is_frame_boundary_like(refined, image_shape):
+                    return None, 0.0
                 ordered = refined
         edge_lengths = np.asarray(
             [np.linalg.norm(ordered[(idx + 1) % 4] - ordered[idx]) for idx in range(4)],
@@ -648,14 +681,18 @@ class PlaneTracker:
 
     def _validate_door_corners(self, corners, image_shape):
         corners = np.asarray(corners, dtype=np.float32)
-        if corners.shape != (4, 2):
+        if corners.shape != (4, 2) or not np.isfinite(corners).all():
             return False
         height, width = image_shape[:2]
         if np.any(corners[:, 0] < -2) or np.any(corners[:, 0] >= width + 2):
             return False
         if np.any(corners[:, 1] < -2) or np.any(corners[:, 1] >= height + 2):
             return False
-        if self._polygon_area(corners) < 800.0 or not self._is_convex_quad(corners):
+        area = self._polygon_area(corners)
+        image_area = max(float(height * width), 1.0)
+        if area < 800.0 or area > image_area * self.door_max_area_ratio or not self._is_convex_quad(corners):
+            return False
+        if self._quad_is_frame_boundary_like(corners, image_shape):
             return False
         edges = np.asarray([np.linalg.norm(corners[(idx + 1) % 4] - corners[idx]) for idx in range(4)], dtype=np.float32)
         if float(np.min(edges)) < 36.0:

@@ -30,6 +30,7 @@ class PyrenderModelRenderer:
         self.texture_renderer = None
         self.texture_renderer_size = None
         self.texture_cache = {}
+        self.last_overlay = None
         self.reported_failures = set()
 
     def preload_models(self, model_paths):
@@ -201,11 +202,35 @@ class PyrenderModelRenderer:
         if rgba.shape[2] < 4 or np.max(rgba[:, :, 3]) <= 0:
             return [False] * len(statuses)
 
+        blend_alpha = max_alpha if max_alpha > 0.0 else 1.0
+        self.last_overlay = {
+            "rgba": rgba.copy(),
+            "render_scale": render_scale,
+            "frame_shape": (height, width),
+            "alpha": blend_alpha,
+        }
         if render_width != width or render_height != height:
-            rgba = cv2.resize(rgba, (width, height), interpolation=cv2.INTER_LINEAR)
-
-        self._alpha_blend(frame, rgba, max_alpha if max_alpha > 0.0 else 1.0)
+            self._alpha_blend_scaled(frame, rgba, render_scale, blend_alpha)
+        else:
+            self._alpha_blend(frame, rgba, blend_alpha)
         return statuses
+
+    def blend_last_overlay(self, frame):
+        if not self.last_overlay:
+            return False
+        height, width = frame.shape[:2]
+        if self.last_overlay.get("frame_shape") != (height, width):
+            return False
+        rgba = self.last_overlay.get("rgba")
+        if rgba is None:
+            return False
+        render_scale = float(self.last_overlay.get("render_scale", 1.0))
+        alpha = float(self.last_overlay.get("alpha", 1.0))
+        if render_scale < 0.999:
+            self._alpha_blend_scaled(frame, rgba, render_scale, alpha)
+        else:
+            self._alpha_blend(frame, rgba, alpha)
+        return True
 
     def render_topdown_texture(self, model_path, texture_size=512, allow_pending=False):
         """Render a cached top-down RGBA sprite for flat ground assets."""
@@ -479,15 +504,57 @@ class PyrenderModelRenderer:
         world_to_camera_gl = cv_to_gl @ world_to_camera_cv
         return np.linalg.inv(world_to_camera_gl)
 
-    def _alpha_blend(self, frame, rgba, global_alpha):
-        if rgba.shape[2] < 4:
+    def _alpha_blend_scaled(self, frame, rgba, render_scale, global_alpha):
+        bbox = self._alpha_bbox(rgba)
+        if bbox is None:
+            return
+        x1, y1, x2, y2 = bbox
+        full_x1 = max(0, int(np.floor(x1 / render_scale)))
+        full_y1 = max(0, int(np.floor(y1 / render_scale)))
+        full_x2 = min(frame.shape[1], int(np.ceil(x2 / render_scale)))
+        full_y2 = min(frame.shape[0], int(np.ceil(y2 / render_scale)))
+        if full_x2 <= full_x1 or full_y2 <= full_y1:
             return
 
-        rgb = rgba[:, :, :3].astype(np.float32)
-        alpha = (rgba[:, :, 3:4].astype(np.float32) / 255.0) * float(global_alpha)
+        crop = rgba[y1:y2, x1:x2]
+        resized = cv2.resize(
+            crop,
+            (full_x2 - full_x1, full_y2 - full_y1),
+            interpolation=cv2.INTER_LINEAR,
+        )
+        self._alpha_blend(frame[full_y1:full_y2, full_x1:full_x2], resized, global_alpha)
+
+    def _alpha_blend(self, frame_roi, rgba, global_alpha):
+        if rgba.shape[2] < 4 or frame_roi.size == 0:
+            return
+
+        bbox = self._alpha_bbox(rgba)
+        if bbox is None:
+            return
+        x1, y1, x2, y2 = bbox
+        rgba_roi = rgba[y1:y2, x1:x2]
+        target = frame_roi[y1:y2, x1:x2]
+
+        rgb = rgba_roi[:, :, :3].astype(np.float32)
+        alpha = (rgba_roi[:, :, 3:4].astype(np.float32) / 255.0) * float(global_alpha)
         if np.max(alpha) <= 0.0:
             return
 
         bgr = rgb[:, :, ::-1]
-        blended = bgr * alpha + frame.astype(np.float32) * (1.0 - alpha)
-        np.copyto(frame, blended.astype(np.uint8))
+        blended = bgr * alpha + target.astype(np.float32) * (1.0 - alpha)
+        np.copyto(target, blended.astype(np.uint8))
+
+    def _alpha_bbox(self, rgba):
+        if rgba is None or rgba.ndim != 3 or rgba.shape[2] < 4:
+            return None
+        ys, xs = np.where(rgba[:, :, 3] > 0)
+        if xs.size == 0 or ys.size == 0:
+            return None
+        pad = 2
+        x1 = max(0, int(xs.min()) - pad)
+        y1 = max(0, int(ys.min()) - pad)
+        x2 = min(rgba.shape[1], int(xs.max()) + pad + 1)
+        y2 = min(rgba.shape[0], int(ys.max()) + pad + 1)
+        if x2 <= x1 or y2 <= y1:
+            return None
+        return x1, y1, x2, y2

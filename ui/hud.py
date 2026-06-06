@@ -4,14 +4,21 @@ from game.battle_system import BattleState
 
 
 class HUD:
-    """Minimal OpenCV HUD for gameplay, setup guidance before battle."""
+    """Minimal OpenCV HUD for setup and non-AR global game state."""
 
     @staticmethod
     def _panel(frame, x, y, w, h, color=(12, 12, 18), alpha=0.62, border=(92, 86, 68)):
-        overlay = frame.copy()
-        cv2.rectangle(overlay, (x, y), (x + w, y + h), color, -1)
-        cv2.addWeighted(overlay, alpha, frame, 1.0 - alpha, 0, frame)
-        cv2.rectangle(frame, (x, y), (x + w, y + h), border, 1, cv2.LINE_AA)
+        x1 = max(0, int(x))
+        y1 = max(0, int(y))
+        x2 = min(frame.shape[1], int(x + w))
+        y2 = min(frame.shape[0], int(y + h))
+        if x2 <= x1 or y2 <= y1:
+            return
+        roi = frame[y1:y2, x1:x2]
+        overlay = roi.copy()
+        overlay[:, :] = color
+        cv2.addWeighted(overlay, alpha, roi, 1.0 - alpha, 0, roi)
+        cv2.rectangle(frame, (x1, y1), (x2, y2), border, 1, cv2.LINE_AA)
 
     @staticmethod
     def _text(frame, text, x, y, scale=0.5, color=(240, 240, 240), thickness=1):
@@ -34,8 +41,8 @@ class HUD:
     @staticmethod
     def _draw_minimal_game_hud(frame, game_state):
         height, width = frame.shape[:2]
-        panel_w = min(460, width - 16)
-        HUD._panel(frame, 8, 8, panel_w, 74, alpha=0.58)
+        panel_w = min(360, width - 16)
+        HUD._panel(frame, 8, 8, panel_w, 48, alpha=0.45, border=(80, 76, 60))
 
         wave = game_state.get("wave", 0)
         best = game_state.get("best_wave", 0)
@@ -47,31 +54,8 @@ class HUD:
             preview = game_state.get("enemy_preview", {})
             phase = f"Enemy: {preview.get('action', '...')}" if preview.get("active") else "Enemy turn"
 
-        HUD._text(frame, f"Wave {wave}  Best {best}", 20, 30, 0.58, (255, 245, 210), 2)
-        HUD._text(frame, phase, 190, 30, 0.52, (120, 230, 255), 1)
-
-        player = game_state.get("player", {})
-        enemy = game_state.get("enemy", {})
-        HUD._bar(
-            frame,
-            20,
-            50,
-            180,
-            14,
-            player.get("hp", 0) / max(player.get("max_hp", 1), 1),
-            (60, 185, 85),
-            f"HP {player.get('hp', 0)}/{player.get('max_hp', 1)}",
-        )
-        HUD._bar(
-            frame,
-            218,
-            50,
-            218,
-            14,
-            enemy.get("hp", 0) / max(enemy.get("max_hp", 1), 1),
-            enemy.get("color", (70, 70, 210)),
-            f"{enemy.get('name', 'Enemy')} {enemy.get('hp', 0)}/{enemy.get('max_hp', 1)}",
-        )
+        HUD._text(frame, f"Wave {wave}  Best {best}", 20, 28, 0.56, (255, 245, 210), 2)
+        HUD._text(frame, phase, 20, 48, 0.42, (120, 230, 255), 1)
 
         if state == BattleState.DEFEAT:
             text = f"DEFEAT - BEST WAVE {game_state.get('best_wave', 0)}"
