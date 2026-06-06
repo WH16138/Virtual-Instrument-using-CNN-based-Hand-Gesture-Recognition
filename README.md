@@ -30,7 +30,7 @@ Implemented:
   - `Open_Palm`: Guard
   - `V_Sign`: ranged attack
   - `Gun_Sign`: ranged attack, trained separately from `V_Sign`
-  - `OK_Sign`: game start only
+  - `OK_Sign`: board registration and game start during setup
 - A4 board registration using dark corner marks drawn near the paper corners.
 - Homography confidence, reprojection error checks, temporal smoothing, and missing marker prediction.
 - Partial marker occlusion handling using current homography projection from A4 world coordinates.
@@ -99,14 +99,13 @@ Startup flow:
 4. Allow camera access on the phone.
 5. Confirm the phone page shows `WebSocket: connected` and increasing frame count.
 6. Aim the phone at the A4 board.
-7. Press `SPACE` to register the board.
-8. Hold `OK_Sign` to start, or press `SPACE` again as fallback.
+7. Hold `OK_Sign` while the detected board highlight is visible.
+8. Keep holding until the progress outline completes; the board registers and the game starts together.
 
 Controls:
 
 ```text
 Q      quit
-SPACE  register board / manual start fallback
 R      reset game
 D      toggle debug overlays
 ```
@@ -208,8 +207,7 @@ State flow:
 
 ```text
 camera setup
-  -> board registration
-  -> ready/start
+  -> OK hold board registration/start
   -> wave intro
   -> player turn
   -> enemy turn
@@ -224,7 +222,7 @@ Fist       Strike
 Open_Palm  Guard
 V_Sign     ranged attack
 Gun_Sign   ranged attack
-OK_Sign    start only
+OK_Sign    setup confirmation only
 ```
 
 The run is endless. The goal is to reach the highest wave possible.

@@ -21,8 +21,8 @@ VISION_INTERVAL_FRAMES = 2
 PRE_REGISTRATION_VISION_INTERVAL_FRAMES = 6
 PLANE_PREVIEW_INTERVAL_FRAMES = 3
 GESTURE_CONFIDENCE_THRESHOLD = 0.6
-START_GESTURE = "OK_Sign"
-START_GESTURE_HOLD_FRAMES = 12
+SETUP_GESTURE = "OK_Sign"
+SETUP_GESTURE_HOLD_FRAMES = 12
 WINDOW_NAME = "VisionQuest"
 DISPLAY_WIDTH = 1120
 DISPLAY_HEIGHT = 760
@@ -143,7 +143,7 @@ def draw_runtime_diagnostics(frame, fps, hand_detection, plane_registered, game_
         1,
     )
 
-    plane_text = "A4 board registered" if plane_registered else "Center an A4 sheet and press SPACE"
+    plane_text = "A4 board registered" if plane_registered else "Center an A4 sheet and hold OK"
     game_text = "Game started" if game_started else "Game not started"
     cv2.putText(
         frame,
@@ -156,7 +156,30 @@ def draw_runtime_diagnostics(frame, fps, hand_detection, plane_registered, game_
     )
 
 
-def draw_a4_detection_highlight(frame, tracking_result, plane_registered):
+def draw_polygon_progress(frame, points, progress, color, thickness=7):
+    if progress <= 0.0:
+        return
+    points = np.asarray(points, dtype=np.int32)
+    if points.shape != (4, 2):
+        return
+    progress = max(0.0, min(1.0, float(progress)))
+    segments = list(zip(points, np.roll(points, -1, axis=0)))
+    lengths = [float(np.linalg.norm(end - start)) for start, end in segments]
+    remaining = sum(lengths) * progress
+    for (start, end), length in zip(segments, lengths):
+        if remaining <= 0.0:
+            break
+        if remaining >= length:
+            cv2.line(frame, tuple(start), tuple(end), color, thickness, cv2.LINE_AA)
+            remaining -= length
+            continue
+        ratio = remaining / max(length, 1e-6)
+        partial_end = start.astype(np.float32) + (end - start).astype(np.float32) * ratio
+        cv2.line(frame, tuple(start), tuple(np.round(partial_end).astype(np.int32)), color, thickness, cv2.LINE_AA)
+        break
+
+
+def draw_a4_detection_highlight(frame, tracking_result, plane_registered, setup_hold_progress=0.0):
     if not tracking_result or not tracking_result.get("success"):
         marker_candidates = (tracking_result or {}).get("marker_candidates") or []
         for candidate in marker_candidates:
@@ -237,6 +260,14 @@ def draw_a4_detection_highlight(frame, tracking_result, plane_registered):
     cv2.fillConvexPoly(overlay, corners, color)
     cv2.addWeighted(overlay, 0.16, frame, 0.84, 0, frame)
     cv2.polylines(frame, [corners], True, color, 4, cv2.LINE_AA)
+    if not plane_registered and setup_hold_progress > 0.0:
+        pulse = 0.5 + 0.5 * np.sin(time.monotonic() * 8.0)
+        progress_color = (
+            int(40 + 30 * pulse),
+            int(220 + 35 * pulse),
+            255,
+        )
+        draw_polygon_progress(frame, corners, setup_hold_progress, progress_color)
 
     labels = ["TL", "TR", "BR", "BL"]
     for label, point in zip(labels, corners):
@@ -300,7 +331,7 @@ def draw_a4_detection_highlight(frame, tracking_result, plane_registered):
     elif plane_registered:
         text = "A4 detected / registered"
     else:
-        text = "A4 detected - press SPACE"
+        text = "A4 detected - hold OK"
     cv2.rectangle(frame, (8, 88), (560, 124), (0, 0, 0), -1)
     cv2.putText(frame, text, (16, 112), cv2.FONT_HERSHEY_SIMPLEX, 0.62, color, 2, cv2.LINE_AA)
 
@@ -332,6 +363,23 @@ def should_show_tracking_attention(tracking_result):
     return False
 
 
+def is_setup_ok_gesture(gesture_info):
+    return (
+        gesture_info.get("smoothed_gesture") == SETUP_GESTURE
+        and gesture_info.get("confidence", 0.0) >= GESTURE_CONFIDENCE_THRESHOLD
+    )
+
+
+def collect_game_model_paths(game_manager):
+    model_paths = set()
+    for enemy_type in game_manager.wave_manager.enemy_types:
+        for attr in ("model_path", "ground_model_path"):
+            model_path = getattr(enemy_type, attr, None)
+            if model_path:
+                model_paths.add(model_path)
+    return sorted(model_paths)
+
+
 def main():
     print("Starting VisionQuest...")
     cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_NORMAL)
@@ -353,11 +401,13 @@ def main():
     action_cards = ActionCardRenderer()
     game_manager.player_pos = (105, 230)
     game_manager.enemy_pos = (105, 70)
+    ar_renderer.preload_models(collect_game_model_paths(game_manager))
 
     game_started = False
     plane_registered = False
     debug_mode = False
-    start_gesture_counter = 0
+    setup_gesture_counter = 0
+    viewport_prepared = False
 
     frame_count = 0
     fps_clock = cv2.getTickCount()
@@ -370,7 +420,7 @@ def main():
 
     print("Ready.")
     print("Open the QR URL on your phone.")
-    print("Controls: SPACE=register centered A4 board/start fallback, D=debug overlays, R=reset, Q=quit")
+    print("Controls: hold OK sign=register A4 board/start, D=debug overlays, R=reset, Q=quit")
 
     try:
         while True:
@@ -415,22 +465,27 @@ def main():
                     ar_renderer.set_plane_size(plane_size)
                     game_manager.player_pos = (ar_renderer.plane_width * 0.50, ar_renderer.plane_height * 0.77)
                     game_manager.enemy_pos = (ar_renderer.plane_width * 0.50, ar_renderer.plane_height * 0.24)
+                if not viewport_prepared:
+                    viewport_prepared = ar_renderer.prepare_viewport(frame.shape)
 
-            if plane_registered and not game_started:
-                start_ok = (
-                    gesture_info.get("smoothed_gesture") == START_GESTURE
-                    and gesture_info.get("confidence", 0.0) >= GESTURE_CONFIDENCE_THRESHOLD
-                )
-                start_gesture_counter = start_gesture_counter + 1 if start_ok else 0
+            if not game_started:
+                setup_ok = is_setup_ok_gesture(gesture_info)
+                can_complete_setup = current_tracking_result.get("success") and H is not None
+                setup_gesture_counter = setup_gesture_counter + 1 if setup_ok and can_complete_setup else 0
 
-                if start_gesture_counter >= START_GESTURE_HOLD_FRAMES:
-                    game_manager.start_game()
-                    game_started = True
-                    floating_text.reset()
-                    action_cards.reset()
-                    start_gesture_counter = 0
-                    freshness_grace_until = time.monotonic() + FRAME_STALE_GRACE_SECONDS
-                    print("Game started by OK sign.")
+                if setup_gesture_counter >= SETUP_GESTURE_HOLD_FRAMES:
+                    if not plane_registered and not plane_tracker.register_tracking_result(current_tracking_result):
+                        setup_gesture_counter = 0
+                        print("A4 board registration failed. Center a marked A4 sheet in the camera view.")
+                    else:
+                        plane_registered = True
+                        game_manager.start_game()
+                        game_started = True
+                        floating_text.reset()
+                        action_cards.reset()
+                        setup_gesture_counter = 0
+                        freshness_grace_until = time.monotonic() + FRAME_STALE_GRACE_SECONDS
+                        print("A4 board registered and game started by OK sign.")
 
             if game_started:
                 action_performed = game_manager.process_gesture(gesture_info)
@@ -446,6 +501,7 @@ def main():
             events = game_manager.consume_events() if game_started else []
             floating_text.add_from_events(events, game_manager.player_pos, game_manager.enemy_pos)
             tracking_needs_attention = should_show_tracking_attention(current_tracking_result)
+            setup_hold_progress = setup_gesture_counter / float(SETUP_GESTURE_HOLD_FRAMES)
 
             if H is not None and game_started:
                 frame = ar_renderer.render_battlefield(
@@ -472,11 +528,11 @@ def main():
                 or tracking_needs_attention
             )
             if show_tracking_overlay:
-                draw_a4_detection_highlight(frame, current_tracking_result, plane_registered)
+                draw_a4_detection_highlight(frame, current_tracking_result, plane_registered, setup_hold_progress)
 
             frame = hand_tracker.draw_hands(frame, hand_detection)
 
-            frame = HUD.draw_game_layer(frame, game_state, gesture_info, plane_registered, game_started)
+            frame = HUD.draw_game_layer(frame, game_state, gesture_info, plane_registered, game_started, setup_hold_progress)
             if debug_mode or not plane_registered:
                 draw_runtime_diagnostics(frame, fps, hand_detection, plane_registered, game_started)
 
@@ -491,34 +547,20 @@ def main():
                 debug_mode = not debug_mode
                 print(f"Debug overlays {'enabled' if debug_mode else 'disabled'}.")
 
-            if key == ord(" "):
-                if not plane_registered:
-                    if plane_tracker.register_tracking_result(current_tracking_result):
-                        plane_registered = True
-                        freshness_grace_until = time.monotonic() + FRAME_STALE_GRACE_SECONDS
-                        print("A4 board registered. Press SPACE again to start the game.")
-                    else:
-                        print("A4 board registration failed. Center a white A4 sheet in the camera view.")
-                elif not game_started:
-                    game_manager.start_game()
-                    game_started = True
-                    floating_text.reset()
-                    action_cards.reset()
-                    start_gesture_counter = 0
-                    freshness_grace_until = time.monotonic() + FRAME_STALE_GRACE_SECONDS
-                    print("Game started by keyboard fallback.")
-
             if key == ord("r"):
                 game_manager.reset_game()
+                plane_tracker = PlaneTracker()
                 floating_text.reset()
                 action_cards.reset()
                 game_started = False
                 plane_registered = False
                 debug_mode = False
-                start_gesture_counter = 0
+                setup_gesture_counter = 0
+                viewport_prepared = False
                 freshness_grace_until = 0.0
                 print("Game reset.")
     finally:
+        ar_renderer.close()
         websocket_server.stop()
         cv2.destroyAllWindows()
 

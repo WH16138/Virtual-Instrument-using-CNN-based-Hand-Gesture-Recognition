@@ -100,7 +100,7 @@ Fist       Strike
 Open_Palm  Guard
 V_Sign     ranged attack
 Gun_Sign   ranged attack
-OK_Sign    start only
+OK_Sign    setup confirmation only
 ```
 
 ## `models/`
@@ -185,6 +185,7 @@ Current rendering policy:
 Responsibilities:
 
 - load GLB/GLTF/OBJ through `trimesh`
+- preload configured enemy and ground assets in the background
 - preserve GLB mesh/material structure where possible
 - normalize model size
 - convert GLB/GLTF Y-up assets into the board's Z-up coordinate system
@@ -203,6 +204,7 @@ solvePnP rvec/tvec
 Fallback behavior:
 
 - If `pyrender`, `trimesh`, OpenGL, or model loading fails, `ARRenderer` falls back to simpler OpenCV model/primitive rendering.
+- If a preloaded model is still loading, the frame does not wait for it; fallback rendering is used until the cache is ready.
 
 ## `game/`
 
@@ -260,7 +262,7 @@ Important flags in `main.py`:
 - `game_started`: battle has started
 - `debug_mode`: debug overlays are visible
 - `freshness_grace_until`: prevents short processing pauses from returning to QR setup
-- `start_gesture_counter`: stable `OK_Sign` count
+- `setup_gesture_counter`: stable setup `OK_Sign` count
 
 Expected main loop order:
 
@@ -268,6 +270,7 @@ Expected main loop order:
 read latest fresh frame
   -> detect hands/gestures on interval
   -> track A4 board
+  -> complete setup when OK hold reaches the threshold
   -> update game state
   -> render AR
   -> render HUD/debug

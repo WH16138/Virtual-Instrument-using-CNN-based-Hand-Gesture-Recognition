@@ -1,4 +1,6 @@
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor
+from threading import Lock
 
 import cv2
 import numpy as np
@@ -20,9 +22,40 @@ class PyrenderModelRenderer:
     def __init__(self):
         self.available = pyrender is not None and trimesh is not None
         self.mesh_cache = {}
+        self.mesh_futures = {}
+        self.mesh_lock = Lock()
+        self.preload_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="model-preload")
         self.renderer = None
         self.renderer_size = None
         self.reported_failures = set()
+
+    def preload_models(self, model_paths):
+        if not self.available:
+            return
+        for model_path in model_paths:
+            path = Path(model_path) if model_path else None
+            if path is None or path.suffix.lower() not in self.SUPPORTED_SUFFIXES or not path.exists():
+                continue
+            key = str(path.resolve())
+            with self.mesh_lock:
+                if key in self.mesh_cache or key in self.mesh_futures:
+                    continue
+                self.mesh_futures[key] = self.preload_executor.submit(self._load_meshes_sync, path)
+
+    def prepare_viewport(self, width, height):
+        if not self.available:
+            return False
+        return self._get_renderer(width, height) is not None
+
+    def close(self):
+        self.preload_executor.shutdown(wait=False, cancel_futures=True)
+        if self.renderer is not None:
+            try:
+                self.renderer.delete()
+            except Exception:
+                pass
+            self.renderer = None
+            self.renderer_size = None
 
     def render_model(
         self,
@@ -42,7 +75,7 @@ class PyrenderModelRenderer:
         if path.suffix.lower() not in self.SUPPORTED_SUFFIXES or not path.exists():
             return False
 
-        meshes = self._load_meshes(path)
+        meshes = self._load_meshes(path, allow_pending=False)
         if not meshes:
             return False
 
@@ -93,11 +126,34 @@ class PyrenderModelRenderer:
             self.renderer_size = None
         return self.renderer
 
-    def _load_meshes(self, path):
+    def _load_meshes(self, path, allow_pending=True):
         key = str(path.resolve())
-        if key in self.mesh_cache:
-            return self.mesh_cache[key]
+        with self.mesh_lock:
+            if key in self.mesh_cache:
+                return self.mesh_cache[key]
+            future = self.mesh_futures.get(key)
 
+        if future is not None:
+            if not future.done() and not allow_pending:
+                return None
+            try:
+                meshes = future.result()
+            except Exception:
+                meshes = None
+            with self.mesh_lock:
+                self.mesh_futures.pop(key, None)
+                if meshes:
+                    self.mesh_cache[key] = meshes
+            return meshes
+
+        meshes = self._load_meshes_sync(path)
+        if meshes:
+            with self.mesh_lock:
+                self.mesh_cache[key] = meshes
+        return meshes
+
+    def _load_meshes_sync(self, path):
+        key = str(path.resolve())
         try:
             loaded = trimesh.load(str(path), force="scene")
         except Exception:
@@ -127,7 +183,6 @@ class PyrenderModelRenderer:
             self._report_once(f"convert:{key}", f"Failed to convert model for pyrender: {path}")
             return None
 
-        self.mesh_cache[key] = pyrender_meshes
         return pyrender_meshes
 
     def _normalize_scene_meshes(self, scene, source_suffix=""):

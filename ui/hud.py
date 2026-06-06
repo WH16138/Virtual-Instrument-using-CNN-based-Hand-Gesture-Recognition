@@ -26,10 +26,10 @@ class HUD:
         HUD._text(frame, label, x + 6, y + h - 4, 0.38, (250, 246, 226), 1)
 
     @staticmethod
-    def draw_game_layer(frame, game_state, gesture_info, plane_registered, game_started):
+    def draw_game_layer(frame, game_state, gesture_info, plane_registered, game_started, setup_hold_progress=0.0):
         if game_started:
             return HUD._draw_minimal_game_hud(frame, game_state)
-        return HUD._draw_setup_panel(frame, plane_registered)
+        return HUD._draw_setup_panel(frame, plane_registered, setup_hold_progress)
 
     @staticmethod
     def _draw_minimal_game_hud(frame, game_state):
@@ -87,22 +87,23 @@ class HUD:
         return frame
 
     @staticmethod
-    def _draw_setup_panel(frame, plane_registered):
+    def _draw_setup_panel(frame, plane_registered, setup_hold_progress=0.0):
         height, _ = frame.shape[:2]
-        w, h = 430, 74
+        w, h = 430, 92
         x, y = 10, 10
         HUD._panel(frame, x, y, w, h, alpha=0.56)
         if not plane_registered:
             title = "Board setup"
-            detail = "Place marked A4 in view, then press SPACE."
+            detail = "Place marked A4 in view, then hold OK."
             color = (80, 190, 255)
         else:
             title = "Board registered"
-            detail = "Show OK sign or press SPACE to start."
+            detail = "Keep holding OK to start."
             color = (90, 230, 130)
         HUD._text(frame, title, x + 14, y + 28, 0.58, color, 2)
         HUD._text(frame, detail, x + 14, y + 54, 0.44, (235, 235, 235), 1)
-        HUD._text(frame, "[SPACE] start/register  [D] debug  [R] reset  [Q] quit", 18, height - 16, 0.42, (230, 230, 230), 1)
+        HUD._bar(frame, x + 14, y + 68, w - 28, 10, setup_hold_progress, (70, 220, 255), "OK hold")
+        HUD._text(frame, "[D] debug  [R] reset  [Q] quit", 18, height - 16, 0.42, (230, 230, 230), 1)
         return frame
 
     @staticmethod
