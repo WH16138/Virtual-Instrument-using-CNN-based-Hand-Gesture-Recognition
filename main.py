@@ -5,6 +5,7 @@ import time
 from ar.ar_renderer import ARRenderer
 from ar.homography import HomographyEstimator
 from ar.plane_tracker import PlaneTracker
+from game.battle_system import BattleState
 from game.game_manager import GameManager
 from network.frame_receiver import FrameReceiver
 from network.websocket_server import WebSocketFrameServer
@@ -155,6 +156,7 @@ def draw_sharp_ui_overlay(
     ar_renderer,
     game_manager,
     setup_hold_progress,
+    defeat_restart_progress,
     plane_registered,
     debug_mode,
     fps,
@@ -179,6 +181,7 @@ def draw_sharp_ui_overlay(
         plane_registered,
         game_started,
         setup_hold_progress,
+        defeat_restart_progress,
     )
     if debug_mode or not plane_registered:
         draw_runtime_diagnostics(target_frame, fps, hand_detection, plane_registered, game_started)
@@ -577,6 +580,7 @@ def main():
     plane_registered = False
     debug_mode = False
     setup_gesture_started_at = None
+    defeat_restart_started_at = None
     viewport_prepared = False
     last_frame_shape = None
 
@@ -668,6 +672,7 @@ def main():
                         floating_text.reset()
                         action_cards.reset()
                         setup_gesture_started_at = None
+                        defeat_restart_started_at = None
                         freshness_grace_until = time.monotonic() + FRAME_STALE_GRACE_SECONDS
                         print("Gate board registered and game started by OK sign.")
             if game_started:
@@ -681,6 +686,33 @@ def main():
                 game_manager.update()
 
             game_state = game_manager.get_game_state()
+            defeat_restart_progress = 0.0
+            if game_started and game_state.get("battle_state") == BattleState.DEFEAT:
+                if is_setup_ok_gesture(gesture_info):
+                    if defeat_restart_started_at is None:
+                        defeat_restart_started_at = now
+                    defeat_restart_progress = min(
+                        1.0,
+                        (now - defeat_restart_started_at) / SETUP_GESTURE_HOLD_SECONDS,
+                    )
+                    if defeat_restart_progress >= 1.0:
+                        game_manager.start_game()
+                        floating_text.reset()
+                        action_cards.reset()
+                        gesture_detector.reset()
+                        last_gesture_info_left = dict(UNKNOWN_GESTURE)
+                        last_gesture_info_right = dict(UNKNOWN_GESTURE)
+                        last_gesture_info = dict(UNKNOWN_GESTURE)
+                        gesture_info = last_gesture_info
+                        defeat_restart_started_at = None
+                        defeat_restart_progress = 0.0
+                        freshness_grace_until = time.monotonic() + FRAME_STALE_GRACE_SECONDS
+                        game_state = game_manager.get_game_state()
+                        print("Game restarted by OK sign.")
+                else:
+                    defeat_restart_started_at = None
+            else:
+                defeat_restart_started_at = None
             events = game_manager.consume_events() if game_started else []
             player_feedback_pos = (
                 (ar_renderer.plane_width * 0.34, ar_renderer.plane_height + 31.0)
@@ -727,6 +759,7 @@ def main():
                 ar_renderer,
                 game_manager,
                 setup_hold_progress,
+                defeat_restart_progress,
                 plane_registered,
                 debug_mode,
                 fps,
@@ -749,6 +782,7 @@ def main():
                 ar_renderer,
                 game_manager,
                 setup_hold_progress,
+                defeat_restart_progress,
                 plane_registered,
                 debug_mode,
                 fps,
@@ -773,6 +807,7 @@ def main():
                 plane_registered = False
                 debug_mode = False
                 setup_gesture_started_at = None
+                defeat_restart_started_at = None
                 viewport_prepared = False
                 last_frame_shape = None
                 freshness_grace_until = 0.0

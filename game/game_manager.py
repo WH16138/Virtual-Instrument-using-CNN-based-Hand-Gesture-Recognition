@@ -121,7 +121,7 @@ class GameManager:
         return True
 
     def _begin_reward_selection(self, now):
-        choices = self.reward_manager.generate_choices(3)
+        choices = self.reward_manager.generate_choices(3, self.player)
         if not choices:
             self._reset_reward_selection()
             self._push_event(

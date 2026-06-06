@@ -107,12 +107,12 @@ class ActionCardRenderer:
 
     def _card_slots(self, plane_size, selection):
         plane_width, plane_height = float(plane_size[0]), float(plane_size[1])
-        card_w = min(52.0, plane_width * 0.225)
+        card_w = min(62.0, plane_width * 0.275)
         card_h = card_w * 1.34
-        gap = card_w * 0.20
+        gap = card_w * 0.16
         total_w = card_w * 3 + gap * 2
         start_x = plane_width * 0.5 - total_w * 0.5
-        y = plane_height + 48.0
+        y = plane_height + 68.0
         selected_action = selection.get("action") if selection.get("active") else None
 
         slots = {}
@@ -144,10 +144,10 @@ class ActionCardRenderer:
 
         plane_width, plane_height = float(plane_size[0]), float(plane_size[1])
         rect = [
-            (5.0, plane_height + 8.0),
-            (plane_width * 0.64, plane_height + 8.0),
-            (plane_width * 0.64, plane_height + 45.0),
-            (5.0, plane_height + 45.0),
+            (0.0, plane_height + 8.0),
+            (plane_width, plane_height + 8.0),
+            (plane_width, plane_height + 58.0),
+            (0.0, plane_height + 58.0),
         ]
         dst = self._project_points(rect, H)
         if dst is None:
@@ -162,14 +162,14 @@ class ActionCardRenderer:
         if cached is not None:
             return cached
 
-        width, height = 420, 150
+        width, height = 620, 170
         if Image is None:
             image = np.zeros((height, width, 4), dtype=np.uint8)
             image[:, :, :3] = (24, 20, 18)
             image[:, :, 3] = 210
-            cv2.putText(image, "PLAYER", (24, 38), cv2.FONT_HERSHEY_SIMPLEX, 0.95, (245, 238, 210, 255), 2, cv2.LINE_AA)
-            cv2.putText(image, stat_line, (24, 76), cv2.FONT_HERSHEY_SIMPLEX, 0.52, (230, 218, 178, 255), 1, cv2.LINE_AA)
-            self._draw_bgra_bar(image, 24, 104, width - 48, 24, ratio, (60, 190, 90), f"HP {hp}/{max_hp}")
+            cv2.putText(image, "PLAYER", (28, 44), cv2.FONT_HERSHEY_SIMPLEX, 1.08, (245, 238, 210, 255), 2, cv2.LINE_AA)
+            cv2.putText(image, stat_line, (28, 86), cv2.FONT_HERSHEY_SIMPLEX, 0.64, (230, 218, 178, 255), 1, cv2.LINE_AA)
+            self._draw_bgra_bar(image, 28, 120, width - 56, 28, ratio, (60, 190, 90), f"HP {hp}/{max_hp}")
             self.panel_cache[key] = image
             return image
 
@@ -178,13 +178,13 @@ class ActionCardRenderer:
         draw.rectangle((4, 4, width - 5, height - 5), outline=(205, 185, 118, 235), width=3)
         draw.rectangle((14, 14, width - 15, height - 15), outline=(80, 66, 46, 180), width=1)
 
-        title_font = self._font(32, bold=True)
-        value_font = self._font(18, bold=False)
-        stat_font = self._font(15, bold=False)
-        draw.text((24, 16), "\uD50C\uB808\uC774\uC5B4", font=title_font, fill=(248, 238, 205, 255))
-        draw.text((24, 60), stat_line, font=stat_font, fill=(230, 218, 178, 255))
+        title_font = self._font(38, bold=True)
+        value_font = self._font(21, bold=False)
+        stat_font = self._font(19, bold=False)
+        draw.text((28, 18), "\uD50C\uB808\uC774\uC5B4", font=title_font, fill=(248, 238, 205, 255))
+        draw.text((28, 70), stat_line, font=stat_font, fill=(230, 218, 178, 255))
 
-        bar_x, bar_y, bar_w, bar_h = 24, 104, width - 48, 24
+        bar_x, bar_y, bar_w, bar_h = 28, 120, width - 56, 28
         draw.rectangle((bar_x, bar_y, bar_x + bar_w, bar_y + bar_h), fill=(34, 32, 40, 245), outline=(210, 190, 140, 255), width=2)
         draw.rectangle((bar_x + 2, bar_y + 2, bar_x + 2 + int((bar_w - 4) * ratio), bar_y + bar_h - 2), fill=(72, 196, 92, 255))
         draw.text((bar_x + 10, bar_y + 1), f"HP {hp}/{max_hp}", font=value_font, fill=(255, 252, 235, 255))
@@ -345,10 +345,10 @@ class ActionCardRenderer:
         image = self._gesture_probability_image(rows, active)
 
         plane_width, plane_height = float(plane_size[0]), float(plane_size[1])
-        panel_w = min(58.0, plane_width * 0.38)
+        panel_w = min(92.0, plane_width * 0.62)
         panel_h = panel_w * 1.02
-        x1 = plane_width + plane_width * 0.055
-        y1 = plane_height * 0.34
+        x1 = plane_width + plane_width * 0.045
+        y1 = plane_height * 0.26
         rect = [
             (x1, y1),
             (x1 + panel_w, y1),
@@ -367,19 +367,19 @@ class ActionCardRenderer:
         if cached is not None:
             return cached
 
-        width, height = 230, 220
+        width, height = 300, 286
         image = np.zeros((height, width, 4), dtype=np.uint8)
         image[:, :, :3] = (14, 13, 20)
         image[:, :, 3] = 214
         cv2.rectangle(image, (5, 5), (width - 6, height - 6), (86, 80, 58, 235), 2, cv2.LINE_AA)
-        cv2.putText(image, "GESTURE", (18, 34), cv2.FONT_HERSHEY_SIMPLEX, 0.72, (244, 236, 202, 255), 2, cv2.LINE_AA)
+        cv2.putText(image, "GESTURE", (22, 43), cv2.FONT_HERSHEY_SIMPLEX, 0.88, (244, 236, 202, 255), 2, cv2.LINE_AA)
 
-        bar_x, bar_w, bar_h = 82, 104, 18
+        bar_x, bar_w, bar_h = 106, 142, 24
         for index, (label, probability, color, aliases) in enumerate(rows):
-            y = 70 + index * 45
+            y = 88 + index * 58
             is_active = active in aliases
             label_color = (255, 252, 218, 255) if is_active else (205, 198, 174, 255)
-            cv2.putText(image, label, (18, y + 14), cv2.FONT_HERSHEY_SIMPLEX, 0.48, label_color, 1, cv2.LINE_AA)
+            cv2.putText(image, label, (22, y + 18), cv2.FONT_HERSHEY_SIMPLEX, 0.58, label_color, 1, cv2.LINE_AA)
             cv2.rectangle(image, (bar_x, y), (bar_x + bar_w, y + bar_h), (38, 36, 46, 245), -1)
             fill_w = int(round(bar_w * max(0.0, min(1.0, probability))))
             if fill_w > 0:
@@ -388,15 +388,15 @@ class ActionCardRenderer:
             cv2.putText(
                 image,
                 f"{int(round(probability * 100.0)):02d}",
-                (bar_x + bar_w + 10, y + 14),
+                (bar_x + bar_w + 12, y + 18),
                 cv2.FONT_HERSHEY_SIMPLEX,
-                0.44,
+                0.54,
                 label_color,
                 1,
                 cv2.LINE_AA,
             )
             if is_active:
-                cv2.rectangle(image, (11, y - 7), (width - 12, y + 27), (95, 235, 255, 255), 1, cv2.LINE_AA)
+                cv2.rectangle(image, (13, y - 8), (width - 14, y + 35), (95, 235, 255, 255), 1, cv2.LINE_AA)
 
         self.panel_cache[key] = image
         return image
@@ -410,13 +410,13 @@ class ActionCardRenderer:
             return
 
         plane_width, plane_height = float(plane_size[0]), float(plane_size[1])
-        panel_w = min(58.0, plane_width * 0.38)
+        panel_w = min(92.0, plane_width * 0.62)
         panel_h = panel_w * 1.02
         badge_w = panel_w
-        badge_h = 11.5
-        gap = 3.0
-        x1 = plane_width + plane_width * 0.055
-        y1 = plane_height * 0.34 + panel_h + 7.0
+        badge_h = 16.5
+        gap = 4.4
+        x1 = plane_width + plane_width * 0.045
+        y1 = plane_height * 0.26 + panel_h + 9.0
         max_visible = 6
 
         visible = augments[:max_visible]
@@ -453,23 +453,23 @@ class ActionCardRenderer:
         if cached is not None:
             return cached
 
-        width, height = 230, 46
+        width, height = 300, 64
         image = np.zeros((height, width, 4), dtype=np.uint8)
         image[:, :, :3] = (20, 16, 28)
         image[:, :, 3] = 218
         cv2.rectangle(image, (4, 4), (width - 5, height - 5), (225, 130, 235, 245), 2, cv2.LINE_AA)
-        cv2.rectangle(image, (11, 11), (33, height - 12), (95, 48, 108, 245), -1)
-        cv2.circle(image, (22, height // 2), 6, (245, 188, 255, 255), -1, cv2.LINE_AA)
+        cv2.rectangle(image, (14, 14), (45, height - 15), (95, 48, 108, 245), -1)
+        cv2.circle(image, (30, height // 2), 8, (245, 188, 255, 255), -1, cv2.LINE_AA)
 
         if Image is not None:
             rgba = image[:, :, [2, 1, 0, 3]].copy()
             canvas = Image.fromarray(rgba, "RGBA")
             draw = ImageDraw.Draw(canvas)
-            font = self._font(17, bold=True)
-            draw.text((42, 11), label[:14], font=font, fill=(252, 235, 255, 255))
+            font = self._font(22, bold=True)
+            draw.text((58, 16), label[:14], font=font, fill=(252, 235, 255, 255))
             image = np.asarray(canvas, dtype=np.uint8)[:, :, [2, 1, 0, 3]].copy()
         else:
-            cv2.putText(image, short_label[:10], (42, 29), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (252, 235, 255, 255), 1, cv2.LINE_AA)
+            cv2.putText(image, short_label[:10], (58, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (252, 235, 255, 255), 1, cv2.LINE_AA)
 
         self.panel_cache[key] = image
         return image
@@ -482,10 +482,10 @@ class ActionCardRenderer:
 
         scale = self._local_pixel_scale(H, enemy_pos)
         plane_width = float(plane_size[0])
-        reward_card_scale = 1.42
+        reward_card_scale = 2.45
         card_w = float(np.clip(scale * plane_width * 0.28 * reward_card_scale, 62.0 * reward_card_scale, 122.0 * reward_card_scale))
         card_h = card_w * 1.34
-        gap = card_w * 0.14
+        gap = card_w * 0.10
         selected_action = selection.get("action") if selection.get("active") else None
 
         x_axis = self._projected_axis(H, enemy_pos, (10.0, 0.0), fallback=(1.0, 0.0))
@@ -590,17 +590,21 @@ class ActionCardRenderer:
             title_font = self._font(19, bold=True)
             small_font = self._font(12, bold=False)
             accent = (color[2], color[1], color[0], 255)
-            draw.text((18, 107), category.upper()[:18], font=small_font, fill=accent)
-            for line_index, line in enumerate(self._wrap_text(title, 12, 2)):
-                draw.text((18, 130 + line_index * 22), line, font=title_font, fill=(248, 242, 220, 255))
-            for line_index, line in enumerate(self._wrap_text(description, 18, 3)):
-                draw.text((18, 183 + line_index * 15), line, font=small_font, fill=(214, 207, 188, 255))
+            title_lines = self._wrap_text(title, 12, 2)
+            title_start_y = 38 if len(title_lines) == 1 else 28
+            for line_index, line in enumerate(title_lines):
+                bbox = draw.textbbox((0, 0), line, font=title_font)
+                line_width = bbox[2] - bbox[0]
+                draw.text(((width - line_width) * 0.5, title_start_y + line_index * 22), line, font=title_font, fill=(255, 247, 220, 255))
+            draw.text((18, 111), category.upper()[:18], font=small_font, fill=accent)
+            for line_index, line in enumerate(self._wrap_text(description, 18, 4)):
+                draw.text((18, 142 + line_index * 16), line, font=small_font, fill=(214, 207, 188, 255))
             image = np.asarray(canvas, dtype=np.uint8)[:, :, [2, 1, 0, 3]].copy()
         else:
-            cv2.putText(image, category.upper()[:12], (18, 118), cv2.FONT_HERSHEY_SIMPLEX, 0.38, color + (255,), 1, cv2.LINE_AA)
-            cv2.putText(image, title[:10].upper(), (18, 150), cv2.FONT_HERSHEY_SIMPLEX, 0.58, (245, 240, 225, 255), 2, cv2.LINE_AA)
-            for line_index, line in enumerate(self._wrap_text(description, 18, 3)):
-                cv2.putText(image, line, (18, 188 + line_index * 17), cv2.FONT_HERSHEY_SIMPLEX, 0.36, (214, 207, 188, 255), 1, cv2.LINE_AA)
+            cv2.putText(image, title[:10].upper(), (22, 62), cv2.FONT_HERSHEY_SIMPLEX, 0.56, (245, 240, 225, 255), 2, cv2.LINE_AA)
+            cv2.putText(image, category.upper()[:12], (18, 123), cv2.FONT_HERSHEY_SIMPLEX, 0.38, color + (255,), 1, cv2.LINE_AA)
+            for line_index, line in enumerate(self._wrap_text(description, 18, 4)):
+                cv2.putText(image, line, (18, 150 + line_index * 17), cv2.FONT_HERSHEY_SIMPLEX, 0.36, (214, 207, 188, 255), 1, cv2.LINE_AA)
 
         self.card_cache[key] = image
         return image

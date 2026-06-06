@@ -33,13 +33,47 @@ class HUD:
         HUD._text(frame, label, x + 6, y + h - 4, 0.38, (250, 246, 226), 1)
 
     @staticmethod
-    def draw_game_layer(frame, game_state, gesture_info, plane_registered, game_started, setup_hold_progress=0.0):
+    def _draw_rect_progress(frame, x, y, w, h, progress, color=(245, 245, 255), thickness=4):
+        progress = max(0.0, min(1.0, float(progress or 0.0)))
+        if progress <= 0.0:
+            return
+
+        x1, y1 = int(x), int(y)
+        x2, y2 = int(x + w), int(y + h)
+        edges = [
+            ((x1, y1), (x2, y1), max(1, x2 - x1)),
+            ((x2, y1), (x2, y2), max(1, y2 - y1)),
+            ((x2, y2), (x1, y2), max(1, x2 - x1)),
+            ((x1, y2), (x1, y1), max(1, y2 - y1)),
+        ]
+        remaining = sum(edge[2] for edge in edges) * progress
+        for start, end, length in edges:
+            if remaining <= 0:
+                break
+            draw_len = min(float(length), remaining)
+            t = draw_len / float(length)
+            px = int(round(start[0] + (end[0] - start[0]) * t))
+            py = int(round(start[1] + (end[1] - start[1]) * t))
+            cv2.line(frame, start, (px, py), color, thickness + 2, cv2.LINE_AA)
+            cv2.line(frame, start, (px, py), (80, 220, 255), thickness, cv2.LINE_AA)
+            remaining -= draw_len
+
+    @staticmethod
+    def draw_game_layer(
+        frame,
+        game_state,
+        gesture_info,
+        plane_registered,
+        game_started,
+        setup_hold_progress=0.0,
+        defeat_restart_progress=0.0,
+    ):
         if game_started:
-            return HUD._draw_minimal_game_hud(frame, game_state)
+            return HUD._draw_minimal_game_hud(frame, game_state, defeat_restart_progress)
         return HUD._draw_setup_panel(frame, plane_registered, setup_hold_progress)
 
     @staticmethod
-    def _draw_minimal_game_hud(frame, game_state):
+    def _draw_minimal_game_hud(frame, game_state, defeat_restart_progress=0.0):
         height, width = frame.shape[:2]
         panel_w = min(360, width - 16)
         HUD._panel(frame, 8, 8, panel_w, 48, alpha=0.45, border=(80, 76, 60))
@@ -59,8 +93,14 @@ class HUD:
 
         if state == BattleState.DEFEAT:
             text = f"DEFEAT - BEST WAVE {game_state.get('best_wave', 0)}"
-            HUD._panel(frame, width // 2 - 190, height // 2 - 34, 380, 68, alpha=0.72, border=(80, 80, 255))
-            HUD._text(frame, text, width // 2 - 160, height // 2 + 8, 0.72, (95, 95, 255), 2)
+            panel_w = min(460, width - 24)
+            panel_h = 98
+            panel_x = width // 2 - panel_w // 2
+            panel_y = height // 2 - panel_h // 2
+            HUD._panel(frame, panel_x, panel_y, panel_w, panel_h, alpha=0.74, border=(80, 80, 255))
+            HUD._text(frame, text, panel_x + 30, panel_y + 42, 0.72, (95, 95, 255), 2)
+            HUD._text(frame, "Hold OK sign for 2s to restart", panel_x + 54, panel_y + 72, 0.44, (235, 235, 235), 1)
+            HUD._draw_rect_progress(frame, panel_x, panel_y, panel_w, panel_h, defeat_restart_progress, (245, 245, 255), 5)
         elif state == BattleState.WAVE_CLEAR:
             HUD._panel(frame, width // 2 - 140, 96, 280, 48, alpha=0.60, border=(90, 230, 130))
             HUD._text(frame, "WAVE CLEAR", width // 2 - 112, 128, 0.78, (90, 230, 130), 2)

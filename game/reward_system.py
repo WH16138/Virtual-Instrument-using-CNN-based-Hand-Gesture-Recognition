@@ -67,66 +67,65 @@ DEFAULT_REWARD_CATALOG = [
         description="Shot damage +4",
         effects={"shot_bonus": 4},
     ),
-
     RewardChoice(
         reward_id="double_attack",
-        title="이중공격",
+        title="Double Attack",
         category="augment",
         description="Strike/Shot 25% extra",
         effects={"augment_flag": "double_attack"},
     ),
     RewardChoice(
         reward_id="cull_the_weak",
-        title="약자멸시",
+        title="Cull the Weak",
         category="augment",
         description="Win matchup: bonus damage",
         effects={"augment_flag": "cull_the_weak"},
     ),
     RewardChoice(
         reward_id="deep_rest",
-        title="깊은휴식",
+        title="Deep Rest",
         category="augment",
         description="Low HP Guard heal +50%",
         effects={"augment_flag": "deep_rest"},
     ),
     RewardChoice(
         reward_id="counter_guard",
-        title="반격",
+        title="Counter Guard",
         category="augment",
         description="Guard may counter offense",
         effects={"augment_flag": "counter_guard"},
     ),
     RewardChoice(
         reward_id="chicken_game",
-        title="치킨게임",
+        title="Chicken Game",
         category="augment",
         description="Shot vs Skill always hits",
         effects={"augment_flag": "chicken_game"},
     ),
     RewardChoice(
         reward_id="vampire",
-        title="뱀파이어",
+        title="Vampire",
         category="augment",
         description="Heal 15% of dealt damage",
         effects={"augment_flag": "vampire"},
     ),
     RewardChoice(
         reward_id="prepared",
-        title="만반의 준비",
+        title="Prepared",
         category="augment",
         description="Wave start: heal missing HP",
         effects={"augment_flag": "prepared"},
     ),
     RewardChoice(
         reward_id="insurance",
-        title="보험금",
+        title="Insurance",
         category="augment",
         description="Lose matchup: heal 3% max HP",
         effects={"augment_flag": "insurance"},
     ),
     RewardChoice(
         reward_id="first_strike",
-        title="선제 공격",
+        title="First Strike",
         category="augment",
         description="Wave start: free Strike",
         effects={"augment_flag": "first_strike"},
@@ -147,18 +146,32 @@ class RewardManager:
     def reset_run(self):
         self.current_choices = []
 
-    def generate_choices(self, count=3):
-        if not self.catalog:
+    def generate_choices(self, count=3, player=None):
+        available_catalog = self._available_catalog(player)
+        if not available_catalog:
             self.current_choices = []
             return []
 
-        sample_count = min(int(count), len(self.catalog), len(self.SLOT_ACTIONS))
-        selected = random.sample(self.catalog, sample_count)
+        sample_count = min(int(count), len(available_catalog), len(self.SLOT_ACTIONS))
+        selected = random.sample(available_catalog, sample_count)
         self.current_choices = [
             reward.to_state(index, self.SLOT_ACTIONS[index])
             for index, reward in enumerate(selected)
         ]
         return [dict(choice) for choice in self.current_choices]
+
+    def _available_catalog(self, player=None):
+        owned_augments = set(getattr(player, "augment_flags", set()) or []) if player is not None else set()
+        if not owned_augments:
+            return list(self.catalog)
+
+        available = []
+        for reward in self.catalog:
+            augment_flag = reward.effects.get("augment_flag")
+            if augment_flag and str(augment_flag) in owned_augments:
+                continue
+            available.append(reward)
+        return available
 
     def get_current_choices(self):
         return [dict(choice) for choice in self.current_choices]
