@@ -17,6 +17,12 @@ class ARRenderer:
         self.max_homography_samples = 18
         self.model_loader = ModelLoader()
         self.pbr_renderer = PyrenderModelRenderer()
+        self.ground_model_scale = 1.04
+        self.ground_height_offset = -1.0
+        self.enemy_model_scale = 0.72
+        self.enemy_fallback_scale = 0.52
+        self.enemy_render_scale = 0.58
+        self.ground_texture_size = 512
 
     def set_plane_size(self, plane_size):
         self.plane_width = float(plane_size[0])
@@ -25,9 +31,19 @@ class ARRenderer:
     def preload_models(self, model_paths):
         self.pbr_renderer.preload_models(model_paths)
 
+    def prewarm_ground_textures(self, model_paths):
+        for model_path in model_paths:
+            self.pbr_renderer.render_topdown_texture(
+                model_path,
+                self.ground_texture_size,
+                allow_pending=True,
+            )
+
     def prepare_viewport(self, frame_shape):
         height, width = frame_shape[:2]
-        return self.pbr_renderer.prepare_viewport(width, height)
+        render_width = max(1, int(round(width * self.enemy_render_scale)))
+        render_height = max(1, int(round(height * self.enemy_render_scale)))
+        return self.pbr_renderer.prepare_viewport(render_width, render_height)
 
     def close(self):
         self.pbr_renderer.close()
@@ -48,43 +64,28 @@ class ARRenderer:
         ground_pos = (self.plane_width * 0.5, self.plane_height * 0.5)
         ground_model_path = enemy_state.get("ground_model_path")
         enemy_model_path = enemy_state.get("model_path")
-        enemy_float_offset = 12.0 + np.sin(time.monotonic() * 1.8) * 5.0
+        board_side = min(self.plane_width, self.plane_height)
+        enemy_model_size = board_side * self.enemy_model_scale
+        enemy_fallback_size = board_side * self.enemy_fallback_scale
+        enemy_float_offset = board_side * 0.08 + np.sin(time.monotonic() * 1.8) * board_side * 0.035
 
-        ground_drawn, enemy_drawn = self.pbr_renderer.render_models(
+        ground_drawn = self._draw_ground_texture(frame, H, ground_model_path, ground_pos, alpha=0.96)
+        enemy_drawn = self.pbr_renderer.render_models(
             frame,
             pose,
             [
                 {
-                    "model_path": ground_model_path,
-                    "board_pos": ground_pos,
-                    "size": self.plane_width * 0.92,
-                    "height_offset": -0.35,
-                    "alpha": 0.96,
-                },
-                {
                     "model_path": enemy_model_path,
                     "board_pos": enemy_pos,
-                    "size": 62,
+                    "size": enemy_model_size,
                     "height_offset": enemy_float_offset,
                     "yaw_degrees": 180.0,
                     "alpha": 1.0,
                 },
             ],
-        )
+            render_scale=self.enemy_render_scale,
+        )[0]
 
-        if not ground_drawn:
-            ground_drawn = self._draw_model_unit(
-                frame,
-                pos=ground_pos,
-                label=None,
-                color=(72, 78, 82),
-                size=self.plane_width * 0.92,
-                model_path=ground_model_path,
-                pose=pose,
-                height_offset=-0.35,
-                alpha=0.62,
-                draw_label=False,
-            )
         if not ground_drawn:
             self._draw_ground_platform(frame, H, ground_pos, enemy_color)
 
@@ -94,13 +95,13 @@ class ARRenderer:
                 pos=enemy_pos,
                 label="E",
                 color=enemy_color,
-                size=56,
+                size=enemy_fallback_size,
                 model_path=enemy_model_path,
                 pose=pose,
                 height_offset=enemy_float_offset,
             )
         if not enemy_drawn:
-            self._draw_cube(frame, H, enemy_pos, "E", enemy_color, 52, pose=pose, height_offset=enemy_float_offset)
+            self._draw_cube(frame, H, enemy_pos, "E", enemy_color, enemy_fallback_size * 0.90, pose=pose, height_offset=enemy_float_offset)
         return frame
 
     def _draw_floor(self, frame, H):
@@ -130,6 +131,53 @@ class ARRenderer:
             color=(70, 120, 120),
         )
 
+    def _draw_ground_texture(self, frame, H, model_path, center, alpha=0.96):
+        texture = self.pbr_renderer.render_topdown_texture(model_path, self.ground_texture_size)
+        if texture is None:
+            return False
+
+        width = self.plane_width * self.ground_model_scale
+        height = self.plane_height * self.ground_model_scale
+        x, y = center
+        dst = self._project_board_points(
+            H,
+            [
+                (x - width * 0.5, y - height * 0.5),
+                (x + width * 0.5, y - height * 0.5),
+                (x + width * 0.5, y + height * 0.5),
+                (x - width * 0.5, y + height * 0.5),
+            ],
+        )
+        if dst is None:
+            return False
+
+        tex_h, tex_w = texture.shape[:2]
+        src = np.asarray(
+            [[0, 0], [tex_w - 1, 0], [tex_w - 1, tex_h - 1], [0, tex_h - 1]],
+            dtype=np.float32,
+        )
+        transform = cv2.getPerspectiveTransform(src, dst.astype(np.float32))
+        warped = cv2.warpPerspective(
+            texture,
+            transform,
+            (frame.shape[1], frame.shape[0]),
+            flags=cv2.INTER_LINEAR,
+            borderMode=cv2.BORDER_CONSTANT,
+            borderValue=(0, 0, 0, 0),
+        )
+        return self._alpha_blend_rgba(frame, warped, alpha)
+
+    def _alpha_blend_rgba(self, frame, rgba, global_alpha=1.0):
+        if rgba is None or rgba.ndim != 3 or rgba.shape[2] < 4:
+            return False
+        alpha = (rgba[:, :, 3:4].astype(np.float32) / 255.0) * float(global_alpha)
+        if float(np.max(alpha)) <= 0.0:
+            return False
+        bgr = rgba[:, :, :3].astype(np.float32)[:, :, ::-1]
+        blended = bgr * alpha + frame.astype(np.float32) * (1.0 - alpha)
+        np.copyto(frame, blended.astype(np.uint8))
+        return True
+
     def _draw_corner_pillars(self, frame, H, pose):
         size = 18
         half = size / 2.0
@@ -157,8 +205,8 @@ class ARRenderer:
         )
 
     def _draw_ground_platform(self, frame, H, center, color):
-        width = self.plane_width * 0.94
-        height = self.plane_height * 0.94
+        width = self.plane_width * self.ground_model_scale
+        height = self.plane_height * self.ground_model_scale
         x, y = center
         points = self._project_board_points(
             H,
@@ -588,4 +636,3 @@ class ARRenderer:
 
     def _shade_color(self, color, factor):
         return tuple(max(0, min(255, int(channel * factor))) for channel in color)
-

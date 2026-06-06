@@ -19,7 +19,8 @@ FRAME_STALE_SECONDS = 5.0
 FRAME_STALE_GRACE_SECONDS = 2.5
 VISION_INTERVAL_FRAMES = 2
 PRE_REGISTRATION_VISION_INTERVAL_FRAMES = 2
-PLANE_PREVIEW_INTERVAL_FRAMES = 3
+PLANE_PREVIEW_INTERVAL_FRAMES = 4
+HAND_DETECTION_MAX_DIM = 640
 GESTURE_CONFIDENCE_THRESHOLD = 0.6
 SETUP_GESTURE = "OK_Sign"
 SETUP_GESTURE_HOLD_FRAMES = 12
@@ -86,6 +87,19 @@ def prepare_display_frame(frame, target_width=None, target_height=None):
     canvas[y1 : y1 + resized_height, x1 : x1 + resized_width] = resized
     return canvas
 
+
+
+def resize_for_vision(frame, max_dim):
+    height, width = frame.shape[:2]
+    max_current = max(width, height)
+    if max_current <= max_dim:
+        return frame
+    scale = float(max_dim) / float(max_current)
+    return cv2.resize(
+        frame,
+        (max(1, int(round(width * scale))), max(1, int(round(height * scale)))),
+        interpolation=cv2.INTER_AREA,
+    )
 
 def draw_waiting_frame(frame_receiver, page_url=None, qr_image=None):
     frame = np.zeros((600, 900, 3), dtype=np.uint8)
@@ -253,22 +267,39 @@ def draw_a4_detection_highlight(frame, tracking_result, plane_registered, setup_
     corners = np.asarray(tracking_result["corners"], dtype=np.int32)
     overlay = frame.copy()
     stale = tracking_result.get("stale", False)
+    registering = (not plane_registered) and setup_hold_progress > 0.0
     if stale:
         color = (0, 165, 255)
+    elif registering:
+        color = (40, 230, 255)
     else:
         color = (0, 255, 80) if plane_registered else (0, 220, 255)
     cv2.fillConvexPoly(overlay, corners, color)
-    cv2.addWeighted(overlay, 0.16, frame, 0.84, 0, frame)
-    cv2.polylines(frame, [corners], True, color, 4, cv2.LINE_AA)
-    if not plane_registered and setup_hold_progress > 0.0:
+    fill_alpha = 0.24 if registering else 0.16
+    cv2.addWeighted(overlay, fill_alpha, frame, 1.0 - fill_alpha, 0, frame)
+
+    if registering:
         pulse = 0.5 + 0.5 * np.sin(time.monotonic() * 8.0)
-        progress_color = (
-            int(40 + 30 * pulse),
-            int(220 + 35 * pulse),
+        glow_color = (
+            int(35 + 45 * pulse),
+            int(190 + 55 * pulse),
             255,
         )
-        draw_polygon_progress(frame, corners, setup_hold_progress, progress_color)
+        for thickness, alpha in ((18, 0.20), (11, 0.28)):
+            glow = frame.copy()
+            cv2.polylines(glow, [corners], True, glow_color, thickness, cv2.LINE_AA)
+            cv2.addWeighted(glow, alpha, frame, 1.0 - alpha, 0, frame)
+        cv2.polylines(frame, [corners], True, (30, 245, 255), 5, cv2.LINE_AA)
+        draw_polygon_progress(frame, corners, setup_hold_progress, (255, 255, 255), 9)
 
+        bx, by, bw, _ = cv2.boundingRect(corners)
+        label = f"OK REGISTERING {int(setup_hold_progress * 100):02d}%"
+        label_x = max(10, min(frame.shape[1] - 265, bx + bw // 2 - 132))
+        label_y = max(38, by - 14)
+        cv2.rectangle(frame, (label_x - 8, label_y - 25), (label_x + 265, label_y + 8), (0, 0, 0), -1)
+        cv2.putText(frame, label, (label_x, label_y), cv2.FONT_HERSHEY_SIMPLEX, 0.58, (255, 255, 255), 2, cv2.LINE_AA)
+    else:
+        cv2.polylines(frame, [corners], True, color, 4, cv2.LINE_AA)
     labels = ["TL", "TR", "BR", "BL"]
     for label, point in zip(labels, corners):
         cv2.circle(frame, tuple(point), 6, (255, 255, 255), -1, cv2.LINE_AA)
@@ -315,7 +346,10 @@ def draw_a4_detection_highlight(frame, tracking_result, plane_registered, setup_
         direction_score = tracking_result.get("door_direction_score")
         symbol_text = f", symbol {symbol_score:.2f}" if symbol_score is not None else ""
         direction_text = f", direction {direction_score:.2f}" if direction_score is not None else ""
-        text = f"Gate board detected (H {confidence:.2f}{symbol_text}{direction_text}{size_text})"
+        if not plane_registered and setup_hold_progress > 0.0:
+            text = f"OK detected - registering gate board {int(setup_hold_progress * 100):02d}%"
+        else:
+            text = f"Gate board detected (H {confidence:.2f}{symbol_text}{direction_text}{size_text})"
     elif tracking_result.get("tracking_method") == "door_flow":
         text = f"Gate board tracking ({matched_points} points, H {confidence:.2f}{error_text})"
     elif tracking_result.get("tracking_method") in ("corner_marks", "corner_marks_partial"):
@@ -387,6 +421,15 @@ def collect_game_model_paths(game_manager):
     return sorted(model_paths)
 
 
+
+def collect_ground_model_paths(game_manager):
+    model_paths = set()
+    for enemy_type in game_manager.wave_manager.enemy_types:
+        model_path = getattr(enemy_type, "ground_model_path", None)
+        if model_path:
+            model_paths.add(model_path)
+    return sorted(model_paths)
+
 def main():
     print("Starting VisionQuest...")
     cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_NORMAL)
@@ -409,6 +452,7 @@ def main():
     game_manager.player_pos = (105, 230)
     game_manager.enemy_pos = (105, 70)
     ar_renderer.preload_models(collect_game_model_paths(game_manager))
+    ar_renderer.prewarm_ground_textures(collect_ground_model_paths(game_manager))
 
     game_started = False
     plane_registered = False
@@ -451,7 +495,8 @@ def main():
 
             vision_interval = VISION_INTERVAL_FRAMES if plane_registered else PRE_REGISTRATION_VISION_INTERVAL_FRAMES
             if frame_count % vision_interval == 0:
-                last_hand_detection = hand_tracker.detect_hands(frame)
+                vision_frame = resize_for_vision(frame, HAND_DETECTION_MAX_DIM)
+                last_hand_detection = hand_tracker.detect_hands(vision_frame)
                 last_gesture_info_left = gesture_detector.detect_gesture(last_hand_detection["left_hand"], "left")
                 last_gesture_info_right = gesture_detector.detect_gesture(last_hand_detection["right_hand"], "right")
                 last_gesture_info = choose_best_gesture(last_gesture_info_left, last_gesture_info_right)
@@ -538,7 +583,8 @@ def main():
             if show_tracking_overlay:
                 draw_a4_detection_highlight(frame, current_tracking_result, plane_registered, setup_hold_progress)
 
-            frame = hand_tracker.draw_hands(frame, hand_detection)
+            if debug_mode or not game_started:
+                frame = hand_tracker.draw_hands(frame, hand_detection)
 
             frame = HUD.draw_game_layer(frame, game_state, gesture_info, plane_registered, game_started, setup_hold_progress)
             if debug_mode or not plane_registered:
@@ -576,4 +622,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

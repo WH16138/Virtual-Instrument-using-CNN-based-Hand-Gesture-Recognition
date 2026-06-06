@@ -41,8 +41,8 @@ class PlaneTracker:
         self.frame_index = 0
         self.last_door_image_points = None
         self.last_door_world_points = None
-        self.door_detection_max_dim = 720
-        self.door_canonical_size = 320
+        self.door_detection_max_dim = 640
+        self.door_canonical_size = 288
         self.door_redetection_interval = 8
         self.door_stable_redetection_interval = 18
         self.door_unstable_redetection_interval = 5
@@ -55,7 +55,7 @@ class PlaneTracker:
         self.debug_marker_candidates = []
         self.debug_marker_display_cache = []
         self.debug_enabled = False
-        self.initial_detection_max_dim = 720
+        self.initial_detection_max_dim = 640
         self.last_reject_reason = None
         self.last_candidate_count = 0
         self.last_white_validation_score = None
@@ -120,18 +120,14 @@ class PlaneTracker:
             return self._failure_result()
 
         if (self.active_detector_mode or self.detector_mode) == "door_marker":
-            if self.frame_index % self._current_door_redetection_interval() == 0:
-                door_result = self._detect_door_marker(gray, search_near_last=True)
-                if door_result is not None:
-                    return self._accept_marker_result(door_result, gray, "door_redetect")
-
             tracked = self._track_last_door_points(gray)
             if tracked is not None:
                 return tracked
 
-            door_result = self._detect_door_marker(gray, search_near_last=self.missed_frames < 3)
-            if door_result is not None:
-                return self._accept_marker_result(door_result, gray, "door_redetect")
+            if self.frame_index % self._current_door_redetection_interval() == 0 or self.missed_frames > 0:
+                door_result = self._detect_door_marker(gray, search_near_last=self.missed_frames < 3)
+                if door_result is not None:
+                    return self._accept_marker_result(door_result, gray, "door_redetect")
         else:
             marker_result = self._detect_corner_marks(gray)
             if marker_result is not None:
@@ -223,19 +219,11 @@ class PlaneTracker:
                 interpolation=cv2.INTER_AREA,
             )
 
-        blurred = cv2.GaussianBlur(work_gray, (5, 5), 0)
-        _, dark = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY_INV | cv2.THRESH_OTSU)
-        dark = cv2.morphologyEx(dark, cv2.MORPH_CLOSE, np.ones((3, 3), dtype=np.uint8), iterations=1)
-        contours, _ = cv2.findContours(dark, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        contours = sorted(contours, key=cv2.contourArea, reverse=True)[:16]
-        self.last_candidate_count = len(contours)
+        candidates = self._door_quad_candidates(work_gray)
+        self.last_candidate_count = len(candidates)
 
         best = None
-        for contour in contours:
-            ordered_work, contour_score = self._door_candidate_corners(contour, work_gray.shape)
-            if ordered_work is None:
-                continue
-
+        for ordered_work, contour_score in candidates:
             ordered = ordered_work / max(scale, 1e-6)
             ordered[:, 0] += roi_x
             ordered[:, 1] += roi_y
@@ -284,7 +272,7 @@ class PlaneTracker:
                     "plane_size": (self.DOOR_BOARD_SIZE, self.DOOR_BOARD_SIZE),
                     "detector_mode": "door_marker",
                     "selected_marker_centers": corners.astype(np.float32),
-                    "candidate_count": len(contours),
+                    "candidate_count": len(candidates),
                     "door_symbol_score": validation["symbol_score"],
                     "door_direction_score": validation["direction_score"],
                     "door_image_points": image_points,
@@ -302,10 +290,78 @@ class PlaneTracker:
         self.last_selected_marker_centers = best["corners"].copy()
         return best
 
+    def _door_quad_candidates(self, work_gray):
+        """Find plausible square gate outlines with cheap OpenCV primitives.
+
+        Otsu threshold is fast and clean when contrast is high. Adaptive
+        threshold helps under uneven lighting. Canny catches hand-drawn outlines
+        that are not filled/closed enough to become a stable dark component.
+        """
+        blurred = cv2.GaussianBlur(work_gray, (5, 5), 0)
+        min_dim = min(work_gray.shape[:2])
+        close_kernel_size = 5 if min_dim >= 420 else 3
+        close_kernel = np.ones((close_kernel_size, close_kernel_size), dtype=np.uint8)
+
+        masks = []
+        _, otsu = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY_INV | cv2.THRESH_OTSU)
+        otsu = cv2.morphologyEx(otsu, cv2.MORPH_CLOSE, close_kernel, iterations=1)
+        masks.append((otsu, cv2.RETR_EXTERNAL, 1.00))
+
+        adaptive_block = int(max(31, min(91, (min_dim // 7) | 1)))
+        adaptive = cv2.adaptiveThreshold(
+            blurred,
+            255,
+            cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+            cv2.THRESH_BINARY_INV,
+            adaptive_block,
+            7,
+        )
+        adaptive = cv2.morphologyEx(adaptive, cv2.MORPH_CLOSE, close_kernel, iterations=1)
+        masks.append((adaptive, cv2.RETR_EXTERNAL, 0.92))
+
+        median_intensity = float(np.median(blurred))
+        lower = int(max(20, 0.52 * median_intensity))
+        upper = int(min(220, max(lower + 45, 1.35 * median_intensity)))
+        edges = cv2.Canny(blurred, lower, upper, apertureSize=3, L2gradient=True)
+        edges = cv2.dilate(edges, np.ones((3, 3), dtype=np.uint8), iterations=1)
+        edges = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, close_kernel, iterations=1)
+        masks.append((edges, cv2.RETR_EXTERNAL, 0.86))
+
+        candidates = []
+        for mask, retrieval_mode, source_weight in masks:
+            contours, _ = cv2.findContours(mask, retrieval_mode, cv2.CHAIN_APPROX_SIMPLE)
+            contours = sorted(contours, key=cv2.contourArea, reverse=True)[:18]
+            for contour in contours:
+                ordered, shape_score = self._door_candidate_corners(contour, work_gray.shape)
+                if ordered is None:
+                    continue
+                self._append_unique_door_candidate(candidates, ordered, shape_score * source_weight)
+
+        candidates.sort(key=lambda item: item[1], reverse=True)
+        return candidates[:12]
+
+    def _append_unique_door_candidate(self, candidates, corners, score):
+        corners = np.asarray(corners, dtype=np.float32)
+        center = np.mean(corners, axis=0)
+        area = self._polygon_area(corners)
+        if area <= 1.0:
+            return
+
+        for index, (existing, existing_score) in enumerate(candidates):
+            existing_center = np.mean(existing, axis=0)
+            existing_area = self._polygon_area(existing)
+            center_distance = float(np.linalg.norm(center - existing_center))
+            area_ratio = max(area, existing_area) / max(min(area, existing_area), 1.0)
+            if center_distance < 18.0 and area_ratio < 1.18:
+                if score > existing_score:
+                    candidates[index] = (corners, float(score))
+                return
+        candidates.append((corners, float(score)))
+
     def _door_candidate_corners(self, contour, image_shape):
         area = float(cv2.contourArea(contour))
         image_area = float(image_shape[0] * image_shape[1])
-        if area < max(900.0, image_area * 0.012) or area > image_area * 0.88:
+        if area < max(900.0, image_area * 0.012) or area > image_area * 1.03:
             return None, 0.0
 
         perimeter = cv2.arcLength(contour, True)
@@ -322,6 +378,12 @@ class PlaneTracker:
         ordered = self._order_quad_points(corners)
         if ordered is None or not self._is_convex_quad(ordered):
             return None, 0.0
+        boundary = contour.reshape(-1, 2).astype(np.float32)
+        refined = self._refine_quad_from_boundary(boundary, ordered) if len(boundary) >= 24 else None
+        if refined is not None:
+            refined = self._order_quad_points(refined)
+            if refined is not None and self._is_convex_quad(refined):
+                ordered = refined
         edge_lengths = np.asarray(
             [np.linalg.norm(ordered[(idx + 1) % 4] - ordered[idx]) for idx in range(4)],
             dtype=np.float32,
@@ -371,62 +433,49 @@ class PlaneTracker:
         _, dark = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY_INV | cv2.THRESH_OTSU)
         dark = (dark > 0).astype(np.uint8)
 
-        edge_lo = max(2, int(round(size * 0.012)))
-        edge_hi = max(edge_lo + 3, int(round(size * 0.10)))
-        along_lo = int(round(size * 0.10))
-        along_hi = int(round(size * 0.90))
-        border_ratios = [
-            float(np.mean(dark[edge_lo:edge_hi, along_lo:along_hi])),
-            float(np.mean(dark[size - edge_hi:size - edge_lo, along_lo:along_hi])),
-            float(np.mean(dark[along_lo:along_hi, edge_lo:edge_hi])),
-            float(np.mean(dark[along_lo:along_hi, size - edge_hi:size - edge_lo])),
-        ]
-        min_border = min(border_ratios)
-        if min_border < 0.055:
+        # The gate marker uses a thin hand-drawn square outline. Measure dark
+        # pixels in narrow bands close to each edge instead of averaging a wide
+        # 10% strip, which unfairly penalizes thin but clear borders.
+        along_lo = int(round(size * 0.08))
+        along_hi = int(round(size * 0.92))
+        band_specs = ((0.000, 0.045), (0.006, 0.065), (0.012, 0.085))
+        edge_scores = []
+        for outer, inner in band_specs:
+            edge_lo = max(0, int(round(size * outer)))
+            edge_hi = max(edge_lo + 3, int(round(size * inner)))
+            edge_scores.append(
+                [
+                    float(np.mean(dark[edge_lo:edge_hi, along_lo:along_hi])),
+                    float(np.mean(dark[size - edge_hi:size - edge_lo if edge_lo > 0 else size, along_lo:along_hi])),
+                    float(np.mean(dark[along_lo:along_hi, edge_lo:edge_hi])),
+                    float(np.mean(dark[along_lo:along_hi, size - edge_hi:size - edge_lo if edge_lo > 0 else size])),
+                ]
+            )
+        border_ratios = np.max(np.asarray(edge_scores, dtype=np.float32), axis=0)
+        min_border = float(np.min(border_ratios))
+        if min_border < 0.024:
             return None
-        border_score = float(np.clip((min_border - 0.055) / 0.24, 0.0, 1.0))
+        border_score = float(np.clip((min_border - 0.024) / 0.18, 0.0, 1.0))
 
         interior_lo = int(round(size * 0.16))
         interior_hi = int(round(size * 0.84))
         interior_dark = float(np.mean(dark[interior_lo:interior_hi, interior_lo:interior_hi]))
-        if interior_dark > 0.34:
+        if interior_dark > 0.38:
             return None
-        white_score = float(np.clip((0.34 - interior_dark) / 0.30, 0.0, 1.0))
+        white_score = float(np.clip((0.38 - interior_dark) / 0.34, 0.0, 1.0))
 
-        circles = cv2.HoughCircles(
-            blurred,
-            cv2.HOUGH_GRADIENT,
-            dp=1.2,
-            minDist=size * 0.18,
-            param1=105,
-            param2=15,
-            minRadius=max(10, int(round(size * 0.055))),
-            maxRadius=max(18, int(round(size * 0.18))),
-        )
-        if circles is None:
+        symbol_candidates = self._door_symbol_candidates(dark, blurred)
+        if not symbol_candidates:
             return None
 
-        yy, xx = np.indices((size, size), dtype=np.float32)
         best = None
-        for circle in circles[0][:8]:
-            cx, cy, radius = (float(circle[0]), float(circle[1]), float(circle[2]))
-            if not (size * 0.30 <= cx <= size * 0.70 and size * 0.26 <= cy <= size * 0.70):
-                continue
-            distance = np.sqrt((xx - cx) ** 2 + (yy - cy) ** 2)
-            annulus = (distance >= radius * 0.72) & (distance <= radius * 1.30)
-            core = distance <= radius * 0.52
-            annulus_dark = float(np.mean(dark[annulus])) if np.any(annulus) else 0.0
-            core_dark = float(np.mean(dark[core])) if np.any(core) else 1.0
-            if annulus_dark < 0.10 or core_dark > 0.46:
-                continue
-            circle_score = float(
-                np.clip((annulus_dark - 0.10) / 0.40, 0.0, 1.0) * 0.74
-                + np.clip((0.46 - core_dark) / 0.40, 0.0, 1.0) * 0.26
-            )
+        for cx, cy, radius, circle_score in symbol_candidates:
             direction = self._door_direction_scores(dark, (cx, cy), radius)
             if direction is None:
                 continue
-            score = border_score * 0.22 + circle_score * 0.36 + direction["score"] * 0.34 + white_score * 0.08
+            score = border_score * 0.20 + circle_score * 0.38 + direction["score"] * 0.34 + white_score * 0.08
+            if score < 0.34:
+                continue
             candidate = {
                 "score": float(np.clip(score, 0.0, 1.0)),
                 "symbol_score": circle_score,
@@ -437,6 +486,81 @@ class PlaneTracker:
                 best = candidate
         return best
 
+    def _door_symbol_candidates(self, dark, blurred):
+        size = int(dark.shape[0])
+        yy, xx = np.indices((size, size), dtype=np.float32)
+        center_min = np.asarray([size * 0.24, size * 0.20], dtype=np.float32)
+        center_max = np.asarray([size * 0.76, size * 0.74], dtype=np.float32)
+        candidates = []
+
+        interior = np.zeros_like(dark, dtype=np.uint8)
+        margin = int(round(size * 0.13))
+        interior[margin:size - margin, margin:size - margin] = (dark[margin:size - margin, margin:size - margin] * 255).astype(np.uint8)
+        contours, _ = cv2.findContours(interior, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        for contour in sorted(contours, key=cv2.contourArea, reverse=True)[:10]:
+            area = float(cv2.contourArea(contour))
+            if area < size * size * 0.0012 or area > size * size * 0.055:
+                continue
+            if len(contour) < 5:
+                continue
+            ellipse = cv2.fitEllipse(contour)
+            (cx, cy), (axis_a, axis_b), _ = ellipse
+            if not (center_min[0] <= cx <= center_max[0] and center_min[1] <= cy <= center_max[1]):
+                continue
+            major = max(float(axis_a), float(axis_b))
+            minor = min(float(axis_a), float(axis_b))
+            if major <= 1e-6:
+                continue
+            ratio = minor / major
+            radius = (major + minor) * 0.25
+            if radius < size * 0.035 or radius > size * 0.20 or ratio < 0.38:
+                continue
+            score = self._door_ring_score(dark, xx, yy, float(cx), float(cy), float(radius))
+            if score is None:
+                continue
+            shape_score = float(np.clip((ratio - 0.38) / 0.42, 0.0, 1.0))
+            candidates.append((float(cx), float(cy), float(radius), float(score * 0.82 + shape_score * 0.18)))
+
+        circles = cv2.HoughCircles(
+            blurred,
+            cv2.HOUGH_GRADIENT,
+            dp=1.2,
+            minDist=size * 0.18,
+            param1=105,
+            param2=13,
+            minRadius=max(9, int(round(size * 0.045))),
+            maxRadius=max(18, int(round(size * 0.19))),
+        )
+        if circles is not None:
+            for circle in circles[0][:6]:
+                cx, cy, radius = (float(circle[0]), float(circle[1]), float(circle[2]))
+                if not (center_min[0] <= cx <= center_max[0] and center_min[1] <= cy <= center_max[1]):
+                    continue
+                score = self._door_ring_score(dark, xx, yy, cx, cy, radius)
+                if score is None:
+                    continue
+                candidates.append((cx, cy, radius, score * 0.95))
+
+        unique = []
+        for candidate in sorted(candidates, key=lambda item: item[3], reverse=True):
+            point = np.asarray(candidate[:2], dtype=np.float32)
+            if any(np.linalg.norm(point - np.asarray(existing[:2], dtype=np.float32)) < size * 0.035 for existing in unique):
+                continue
+            unique.append(candidate)
+        return unique[:8]
+
+    def _door_ring_score(self, dark, xx, yy, cx, cy, radius):
+        distance = np.sqrt((xx - cx) ** 2 + (yy - cy) ** 2)
+        annulus = (distance >= radius * 0.68) & (distance <= radius * 1.36)
+        core = distance <= radius * 0.52
+        annulus_dark = float(np.mean(dark[annulus])) if np.any(annulus) else 0.0
+        core_dark = float(np.mean(dark[core])) if np.any(core) else 1.0
+        if annulus_dark < 0.070 or core_dark > 0.56:
+            return None
+        return float(
+            np.clip((annulus_dark - 0.070) / 0.38, 0.0, 1.0) * 0.74
+            + np.clip((0.56 - core_dark) / 0.46, 0.0, 1.0) * 0.26
+        )
     def _door_direction_scores(self, dark, center, radius):
         size = int(dark.shape[0])
         center = np.asarray(center, dtype=np.float32)
@@ -453,22 +577,43 @@ class PlaneTracker:
                 border_distance = size - 1 - center[1]
             else:
                 border_distance = center[1]
-            line_start = radius + size * 0.014
-            line_end = min(radius + size * 0.34, border_distance - size * 0.10)
-            if line_end <= line_start + size * 0.045:
-                scores.append(-1.0)
-                strengths.append(0.0)
-                continue
-            line_mask = self._door_strip_mask(
-                dark.shape,
-                center,
-                direction,
-                perpendicular,
-                line_start,
-                line_end,
-                size * 0.030,
-            )
-            strength = float(np.mean(dark[line_mask])) if np.any(line_mask) else 0.0
+
+            line_start = radius + size * 0.010
+            max_end = border_distance - size * 0.075
+            direction_strengths = []
+            for extension in (0.16, 0.22, 0.27):
+                line_end = min(radius + size * extension, max_end)
+                if line_end <= line_start + size * 0.032:
+                    continue
+                strip_half_width = max(size * 0.018, min(size * 0.035, radius * 0.36))
+                line_mask = self._door_strip_mask(
+                    dark.shape,
+                    center,
+                    direction,
+                    perpendicular,
+                    line_start,
+                    line_end,
+                    strip_half_width,
+                )
+                if np.any(line_mask):
+                    line_strength = float(np.mean(dark[line_mask]))
+                    gap_start = line_end + size * 0.025
+                    gap_end = border_distance - size * 0.055
+                    if gap_end > gap_start + size * 0.025:
+                        gap_mask = self._door_strip_mask(
+                            dark.shape,
+                            center,
+                            direction,
+                            perpendicular,
+                            gap_start,
+                            gap_end,
+                            strip_half_width * 1.15,
+                        )
+                        gap_dark = float(np.mean(dark[gap_mask])) if np.any(gap_mask) else 0.0
+                    else:
+                        gap_dark = 0.0
+                    direction_strengths.append(max(0.0, line_strength - gap_dark * 0.80))
+            strength = max(direction_strengths) if direction_strengths else 0.0
             strengths.append(strength)
             scores.append(strength)
 
@@ -477,10 +622,10 @@ class PlaneTracker:
         best_score = float(scores[best_index])
         second_score = float(scores[int(order[1])]) if len(order) > 1 else 0.0
         margin = best_score - second_score
-        if best_score < 0.085 or margin < 0.018:
+        if best_score < 0.105 or margin < 0.012:
             return None
         normalized = float(
-            np.clip((best_score - 0.085) / 0.34, 0.0, 1.0) * 0.72
+            np.clip((best_score - 0.105) / 0.34, 0.0, 1.0) * 0.72
             + np.clip(margin / 0.22, 0.0, 1.0) * 0.28
         )
         return {"index": best_index, "score": normalized}
@@ -527,9 +672,9 @@ class PlaneTracker:
         mask = cv2.erode(mask, np.ones((5, 5), dtype=np.uint8), iterations=1)
         features = cv2.goodFeaturesToTrack(
             gray,
-            maxCorners=80,
-            qualityLevel=0.006,
-            minDistance=6,
+            maxCorners=52,
+            qualityLevel=0.008,
+            minDistance=8,
             mask=mask,
             blockSize=5,
             useHarrisDetector=False,
@@ -569,9 +714,9 @@ class PlaneTracker:
             gray,
             previous.reshape(-1, 1, 2),
             None,
-            winSize=(27, 27),
-            maxLevel=3,
-            criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 24, 0.02),
+            winSize=(23, 23),
+            maxLevel=2,
+            criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 18, 0.025),
         )
         if next_points is None or status is None:
             return None
@@ -580,9 +725,9 @@ class PlaneTracker:
             self.last_gray,
             next_points,
             None,
-            winSize=(27, 27),
-            maxLevel=3,
-            criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 18, 0.03),
+            winSize=(23, 23),
+            maxLevel=2,
+            criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 14, 0.035),
         )
         if backward is None or backward_status is None:
             return None

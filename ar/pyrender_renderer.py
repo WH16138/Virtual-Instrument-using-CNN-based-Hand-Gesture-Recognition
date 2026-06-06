@@ -27,6 +27,9 @@ class PyrenderModelRenderer:
         self.preload_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="model-preload")
         self.renderer = None
         self.renderer_size = None
+        self.texture_renderer = None
+        self.texture_renderer_size = None
+        self.texture_cache = {}
         self.reported_failures = set()
 
     def preload_models(self, model_paths):
@@ -56,6 +59,13 @@ class PyrenderModelRenderer:
                 pass
             self.renderer = None
             self.renderer_size = None
+        if self.texture_renderer is not None:
+            try:
+                self.texture_renderer.delete()
+            except Exception:
+                pass
+            self.texture_renderer = None
+            self.texture_renderer_size = None
 
     def render_model(
         self,
@@ -85,7 +95,7 @@ class PyrenderModelRenderer:
             return False
 
         scene = pyrender.Scene(bg_color=[0.0, 0.0, 0.0, 0.0], ambient_light=[0.35, 0.35, 0.35, 1.0])
-        model_pose = self._model_pose(board_pos, size, height_offset, yaw_degrees)
+        model_pose = self._model_pose(board_pos, size, height_offset, yaw_degrees, pose.get("z_sign", 1.0))
         for mesh in meshes:
             scene.add(mesh, pose=model_pose)
 
@@ -97,10 +107,9 @@ class PyrenderModelRenderer:
             znear=1.0,
             zfar=10000.0,
         )
-        scene.add(camera, pose=self._camera_pose_from_solvepnp(pose["rvec"], pose["tvec"]))
-
-        light_pose = self._camera_pose_from_solvepnp(pose["rvec"], pose["tvec"])
-        scene.add(pyrender.DirectionalLight(color=np.ones(3), intensity=2.6), pose=light_pose)
+        camera_pose = self._camera_pose_from_solvepnp(pose["rvec"], pose["tvec"])
+        scene.add(camera, pose=camera_pose)
+        scene.add(pyrender.DirectionalLight(color=np.ones(3), intensity=2.6), pose=camera_pose)
 
         try:
             rgba, _ = renderer.render(scene, flags=pyrender.RenderFlags.RGBA | pyrender.RenderFlags.SKIP_CULL_FACES)
@@ -112,19 +121,22 @@ class PyrenderModelRenderer:
         self._alpha_blend(frame, rgba, alpha)
         return True
 
-    def render_models(self, frame, pose, model_specs):
+    def render_models(self, frame, pose, model_specs, render_scale=1.0):
         """Render several board-space models in one pyrender pass.
 
-        Each spec accepts: model_path, board_pos, size, height_offset,
-        yaw_degrees, and alpha. The return value mirrors model_specs with
-        True for specs that were added to the scene.
+        render_scale renders into a smaller offscreen buffer and upscales the
+        RGBA result before compositing. This is useful for animated monster
+        models, where full camera resolution rendering is the main FPS bottleneck.
         """
         statuses = [False] * len(model_specs or [])
         if not self.available or pose is None or not model_specs:
             return statuses
 
         height, width = frame.shape[:2]
-        renderer = self._get_renderer(width, height)
+        render_scale = float(np.clip(render_scale, 0.35, 1.0))
+        render_width = max(1, int(round(width * render_scale)))
+        render_height = max(1, int(round(height * render_scale)))
+        renderer = self._get_renderer(render_width, render_height)
         if renderer is None:
             return statuses
 
@@ -143,12 +155,24 @@ class PyrenderModelRenderer:
             if not meshes:
                 continue
 
-            model_pose = self._model_pose(
-                spec.get("board_pos", (0.0, 0.0)),
-                float(spec.get("size", 1.0)),
-                float(spec.get("height_offset", 0.0)),
-                float(spec.get("yaw_degrees", 0.0)),
-            )
+            fit_size = spec.get("fit_size")
+            if fit_size is not None:
+                model_pose = self._model_pose_fit(
+                    meshes,
+                    spec.get("board_pos", (0.0, 0.0)),
+                    fit_size,
+                    float(spec.get("height_offset", 0.0)),
+                    float(spec.get("yaw_degrees", 0.0)),
+                    pose.get("z_sign", 1.0),
+                )
+            else:
+                model_pose = self._model_pose(
+                    spec.get("board_pos", (0.0, 0.0)),
+                    float(spec.get("size", 1.0)),
+                    float(spec.get("height_offset", 0.0)),
+                    float(spec.get("yaw_degrees", 0.0)),
+                    pose.get("z_sign", 1.0),
+                )
             for mesh in meshes:
                 scene.add(mesh, pose=model_pose)
             statuses[index] = True
@@ -159,10 +183,10 @@ class PyrenderModelRenderer:
 
         camera_pose = self._camera_pose_from_solvepnp(pose["rvec"], pose["tvec"])
         camera = pyrender.IntrinsicsCamera(
-            fx=float(pose["camera_matrix"][0, 0]),
-            fy=float(pose["camera_matrix"][1, 1]),
-            cx=float(pose["camera_matrix"][0, 2]),
-            cy=float(pose["camera_matrix"][1, 2]),
+            fx=float(pose["camera_matrix"][0, 0]) * render_scale,
+            fy=float(pose["camera_matrix"][1, 1]) * render_scale,
+            cx=float(pose["camera_matrix"][0, 2]) * render_scale,
+            cy=float(pose["camera_matrix"][1, 2]) * render_scale,
             znear=1.0,
             zfar=10000.0,
         )
@@ -177,21 +201,83 @@ class PyrenderModelRenderer:
         if rgba.shape[2] < 4 or np.max(rgba[:, :, 3]) <= 0:
             return [False] * len(statuses)
 
+        if render_width != width or render_height != height:
+            rgba = cv2.resize(rgba, (width, height), interpolation=cv2.INTER_LINEAR)
+
         self._alpha_blend(frame, rgba, max_alpha if max_alpha > 0.0 else 1.0)
         return statuses
+
+    def render_topdown_texture(self, model_path, texture_size=512, allow_pending=False):
+        """Render a cached top-down RGBA sprite for flat ground assets."""
+        if not self.available or not model_path:
+            return None
+
+        path = Path(model_path)
+        if path.suffix.lower() not in self.SUPPORTED_SUFFIXES or not path.exists():
+            return None
+
+        texture_size = int(max(128, min(1024, texture_size)))
+        key = (str(path.resolve()), texture_size)
+        cached = self.texture_cache.get(key)
+        if cached is not None:
+            return cached
+
+        meshes = self._load_meshes(path, allow_pending=allow_pending)
+        if not meshes:
+            return None
+
+        renderer = self._get_texture_renderer(texture_size)
+        if renderer is None:
+            return None
+
+        scene = pyrender.Scene(bg_color=[0.0, 0.0, 0.0, 0.0], ambient_light=[0.52, 0.52, 0.52, 1.0])
+        for mesh in meshes:
+            scene.add(mesh, pose=np.eye(4, dtype=np.float64))
+
+        camera_pose = np.eye(4, dtype=np.float64)
+        camera_pose[2, 3] = 2.2
+        camera = pyrender.OrthographicCamera(xmag=0.68, ymag=0.68, znear=0.01, zfar=10.0)
+        scene.add(camera, pose=camera_pose)
+        scene.add(pyrender.DirectionalLight(color=np.ones(3), intensity=2.8), pose=camera_pose)
+
+        try:
+            rgba, _ = renderer.render(scene, flags=pyrender.RenderFlags.RGBA | pyrender.RenderFlags.SKIP_CULL_FACES)
+        except Exception:
+            return None
+
+        if rgba.shape[2] < 4 or np.max(rgba[:, :, 3]) <= 0:
+            return None
+
+        self.texture_cache[key] = rgba
+        return rgba
+
     def _get_renderer(self, width, height):
-        size = (width, height)
+        size = (int(width), int(height))
         if self.renderer is not None and self.renderer_size == size:
             return self.renderer
         try:
             if self.renderer is not None:
                 self.renderer.delete()
-            self.renderer = pyrender.OffscreenRenderer(viewport_width=width, viewport_height=height)
+            self.renderer = pyrender.OffscreenRenderer(viewport_width=size[0], viewport_height=size[1])
             self.renderer_size = size
         except Exception:
             self.renderer = None
             self.renderer_size = None
         return self.renderer
+
+    def _get_texture_renderer(self, texture_size):
+        size = int(texture_size)
+        if self.texture_renderer is not None and self.texture_renderer_size == size:
+            return self.texture_renderer
+        try:
+            if self.texture_renderer is not None:
+                self.texture_renderer.delete()
+            self.texture_renderer = pyrender.OffscreenRenderer(viewport_width=size, viewport_height=size)
+            self.texture_renderer_size = size
+        except Exception:
+            self.texture_renderer = None
+            self.texture_renderer_size = None
+        return self.texture_renderer
 
     def _load_meshes(self, path, allow_pending=True):
         key = str(path.resolve())
@@ -319,7 +405,48 @@ class PyrenderModelRenderer:
         self.reported_failures.add(key)
         print(f"[PyrenderModelRenderer] {message}")
 
-    def _model_pose(self, board_pos, size, height_offset, yaw_degrees=0.0):
+    def _mesh_position_bounds(self, meshes):
+        positions = []
+        for mesh in meshes:
+            for primitive in getattr(mesh, "primitives", []):
+                primitive_positions = getattr(primitive, "positions", None)
+                if primitive_positions is not None and len(primitive_positions) > 0:
+                    positions.append(np.asarray(primitive_positions, dtype=np.float64))
+        if not positions:
+            return np.zeros(3, dtype=np.float64), np.ones(3, dtype=np.float64)
+        stacked = np.vstack(positions)
+        return np.min(stacked, axis=0), np.max(stacked, axis=0)
+
+    def _model_pose_fit(self, meshes, board_pos, fit_size, height_offset, yaw_degrees=0.0, z_sign=1.0):
+        target_width, target_height = fit_size
+        bounds_min, bounds_max = self._mesh_position_bounds(meshes)
+        extent = np.maximum(bounds_max - bounds_min, 1e-6)
+        sx = float(target_width) / float(extent[0])
+        sy = float(target_height) / float(extent[1])
+        sz = max(sx, sy)
+        z_sign = 1.0 if float(z_sign) >= 0.0 else -1.0
+
+        yaw = np.deg2rad(float(yaw_degrees))
+        cos_yaw = float(np.cos(yaw))
+        sin_yaw = float(np.sin(yaw))
+        rotation_z = np.asarray(
+            [
+                [cos_yaw, -sin_yaw, 0.0],
+                [sin_yaw, cos_yaw, 0.0],
+                [0.0, 0.0, 1.0],
+            ],
+            dtype=np.float64,
+        )
+        scale_matrix = np.diag([sx, sy, sz * z_sign]).astype(np.float64)
+
+        pose = np.eye(4, dtype=np.float64)
+        pose[:3, :3] = rotation_z @ scale_matrix
+        pose[0, 3] = float(board_pos[0])
+        pose[1, 3] = float(board_pos[1])
+        pose[2, 3] = float(height_offset) * z_sign
+        return pose
+
+    def _model_pose(self, board_pos, size, height_offset, yaw_degrees=0.0, z_sign=1.0):
         yaw = np.deg2rad(float(yaw_degrees))
         cos_yaw = float(np.cos(yaw))
         sin_yaw = float(np.sin(yaw))
@@ -332,13 +459,14 @@ class PyrenderModelRenderer:
             ],
             dtype=np.float64,
         )
-        scale_matrix = np.diag([size, size, size]).astype(np.float64)
+        z_sign = 1.0 if float(z_sign) >= 0.0 else -1.0
+        scale_matrix = np.diag([size, size, size * z_sign]).astype(np.float64)
 
         pose = np.eye(4, dtype=np.float64)
         pose[:3, :3] = rotation_z @ scale_matrix
         pose[0, 3] = float(board_pos[0])
         pose[1, 3] = float(board_pos[1])
-        pose[2, 3] = float(height_offset)
+        pose[2, 3] = float(height_offset) * z_sign
         return pose
 
     def _camera_pose_from_solvepnp(self, rvec, tvec):
@@ -363,4 +491,3 @@ class PyrenderModelRenderer:
         bgr = rgb[:, :, ::-1]
         blended = bgr * alpha + frame.astype(np.float32) * (1.0 - alpha)
         np.copyto(frame, blended.astype(np.uint8))
-
