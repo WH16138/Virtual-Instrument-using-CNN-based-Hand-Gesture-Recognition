@@ -1,4 +1,5 @@
 from pathlib import Path
+from threading import Lock
 
 import numpy as np
 
@@ -15,17 +16,19 @@ class ModelLoader:
 
     def __init__(self):
         self.cache = {}
+        self.lock = Lock()
 
     def load(self, path):
         if not path:
             return None
 
         model_path = Path(path)
-        if not model_path.exists():
+        if model_path.suffix.lower() != ".obj" or not model_path.exists():
             return None
         key = str(model_path.resolve())
-        if key in self.cache:
-            return self.cache[key]
+        with self.lock:
+            if key in self.cache:
+                return self.cache[key]
 
         vertices = []
         vertex_colors = []
@@ -75,7 +78,8 @@ class ModelLoader:
             faces,
             face_colors=face_colors,
         )
-        self.cache[key] = model
+        with self.lock:
+            self.cache[key] = model
         return model
 
     def _load_mtl(self, path):

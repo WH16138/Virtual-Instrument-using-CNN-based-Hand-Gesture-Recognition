@@ -22,6 +22,16 @@ class ARRenderer:
         self.plane_width = float(plane_size[0])
         self.plane_height = float(plane_size[1])
 
+    def preload_models(self, model_paths):
+        self.pbr_renderer.preload_models(model_paths)
+
+    def prepare_viewport(self, frame_shape):
+        height, width = frame_shape[:2]
+        return self.pbr_renderer.prepare_viewport(width, height)
+
+    def close(self):
+        self.pbr_renderer.close()
+
     def render_battlefield(self, frame, H, player_pos, enemy_pos, game_state=None, show_floor_mesh=True):
         if H is None:
             return frame
