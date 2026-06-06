@@ -11,7 +11,7 @@ class GameManager:
     """High-level game state coordinator."""
 
     ACTION_HOLD_SECONDS = 2.0
-    ENEMY_PREVIEW_SECONDS = 2.0
+    ROUND_REVEAL_SECONDS = 1.35
 
     def __init__(self, turn_delay_seconds=1.2, input_repeat_seconds=0.9):
         self.player = Player(max_hp=100)
@@ -31,9 +31,7 @@ class GameManager:
         self.event_history = []
         self.phase_label = "Prepare the board"
         self.action_hold = self._empty_action_hold()
-        self.enemy_preview_action = None
-        self.enemy_preview_started_at = 0.0
-        self.enemy_preview_progress = 0.0
+        self.round_reveal = self._empty_round_reveal()
 
     def _empty_action_hold(self):
         return {
@@ -46,27 +44,45 @@ class GameManager:
             "active": False,
         }
 
+    def _empty_round_reveal(self):
+        return {
+            "active": False,
+            "player_action": None,
+            "enemy_action": None,
+            "started_at": 0.0,
+            "progress": 0.0,
+            "required_seconds": self.ROUND_REVEAL_SECONDS,
+        }
+
     def _reset_action_hold(self):
         self.action_hold = self._empty_action_hold()
 
-    def _begin_enemy_preview(self, now):
-        self.enemy_preview_action = self.enemy.choose_action()
-        self.enemy_preview_started_at = now
-        self.enemy_preview_progress = 0.0
-        self.next_action_time = now + self.ENEMY_PREVIEW_SECONDS
-        self.phase_label = "Enemy choosing"
-        self._push_event(
-            "enemy_preview",
-            self.enemy_preview_action,
-            source="enemy",
-            kind=self.enemy_preview_action,
-            target="enemy",
-        )
+    def _clear_round_reveal(self):
+        self.round_reveal = self._empty_round_reveal()
 
-    def _clear_enemy_preview(self):
-        self.enemy_preview_action = None
-        self.enemy_preview_started_at = 0.0
-        self.enemy_preview_progress = 0.0
+    def _begin_round_reveal(self, now, player_action, enemy_action):
+        if not self.battle_system.begin_round_reveal():
+            return False
+        self.round_reveal = {
+            "active": True,
+            "player_action": player_action,
+            "enemy_action": enemy_action,
+            "started_at": now,
+            "progress": 0.0,
+            "required_seconds": self.ROUND_REVEAL_SECONDS,
+        }
+        self.next_action_time = now + self.ROUND_REVEAL_SECONDS
+        self.phase_label = f"Reveal: {player_action} vs {enemy_action}"
+        self._push_event(
+            "round_reveal",
+            f"{player_action} vs {enemy_action}",
+            source="center",
+            kind="Reveal",
+            target="center",
+            player_action=player_action,
+            enemy_action=enemy_action,
+        )
+        return True
 
     def start_game(self):
         """Start an infinite wave run."""
@@ -77,7 +93,7 @@ class GameManager:
         self.last_input_gesture = None
         self.last_input_time = 0.0
         self._reset_action_hold()
-        self._clear_enemy_preview()
+        self._clear_round_reveal()
 
     def _push_event(self, event_type, label, **payload):
         event = {
@@ -88,7 +104,13 @@ class GameManager:
         }
         self.events.append(event)
         self.event_history.append(event)
-        self.event_history = self.event_history[-10:]
+        self.event_history = self.event_history[-14:]
+
+    def _push_battle_events(self, events):
+        for event in events:
+            payload = dict(event)
+            label = payload.pop("label", payload.get("kind", "Action"))
+            self._push_event("action", label, **payload)
 
     def consume_events(self):
         events = list(self.events)
@@ -101,6 +123,7 @@ class GameManager:
         self.battle_system.start_wave(enemy_type, difficulty, self.wave_manager.current_wave)
         self.phase_label = f"Wave {self.wave_manager.current_wave}: {enemy_type.name}"
         self.next_action_time = now + 1.45
+        self._clear_round_reveal()
         self._push_event(
             "wave_start",
             self.phase_label,
@@ -110,7 +133,7 @@ class GameManager:
         )
 
     def process_gesture(self, gesture_info):
-        """Process a recognized gesture during the player's turn."""
+        """Process a recognized gesture during the player's card selection phase."""
         if not self.battle_system.is_battle_active:
             self._reset_action_hold()
             return False
@@ -135,7 +158,7 @@ class GameManager:
             self._reset_action_hold()
             return False
 
-        if self.action_hold["action"] != action:
+        if self.action_hold["gesture"] != gesture:
             self.action_hold = {
                 "gesture": gesture,
                 "action": action,
@@ -153,88 +176,83 @@ class GameManager:
         if self.action_hold["progress"] < 1.0:
             return False
 
-        event = self.battle_system.handle_player_action(gesture)
+        enemy_action = self.enemy.choose_action()
+        self.last_input_gesture = gesture
+        self.last_input_time = now
         self._reset_action_hold()
-        if event is not None:
-            self.last_input_gesture = gesture
-            self.last_input_time = now
-            payload = dict(event)
-            label = payload.pop("label")
-            self._push_event("action", label, **payload)
-            if self.battle_system.state == BattleState.ENEMY_TURN:
-                self._begin_enemy_preview(now)
-            else:
-                self.phase_label = "Wave clear"
-                self.next_action_time = now + self.turn_delay_seconds
-            if self.battle_system.state == BattleState.WAVE_CLEAR:
-                self._push_event(
-                    "wave_clear",
-                    f"Wave {self.wave_manager.current_wave} clear",
-                    target="center",
-                    wave=self.wave_manager.current_wave,
-                )
-                self.next_action_time = now + 1.7
-        return event is not None
+        return self._begin_round_reveal(now, action, enemy_action)
 
     def update(self):
-        """Advance timed wave and enemy phases."""
+        """Advance timed wave, reveal, and result phases."""
         state = self.battle_system.state
         now = time.monotonic()
 
         if state == BattleState.WAVE_INTRO:
             self._reset_action_hold()
-            self._clear_enemy_preview()
+            self._clear_round_reveal()
             if now >= self.next_action_time:
                 self.battle_system.begin_player_turn()
-                self.phase_label = "Your turn"
+                self.enemy.prepare_action_weights()
+                self.phase_label = "Choose an action"
                 self.next_action_time = now + 0.25
                 self._push_event("ready", "Action ready", target="player")
             return
 
         if state == BattleState.WAVE_CLEAR:
             self._reset_action_hold()
-            self._clear_enemy_preview()
+            self._clear_round_reveal()
             if now >= self.next_action_time:
                 self._start_next_wave(now)
             return
 
-        if state != BattleState.ENEMY_TURN:
+        if state != BattleState.ROUND_REVEAL:
             return
 
-        if self.enemy_preview_action is None:
-            self._begin_enemy_preview(now)
+        if not self.round_reveal.get("active"):
+            self.battle_system.state = BattleState.PLAYER_TURN
+            self.enemy.prepare_action_weights()
+            self.phase_label = "Choose an action"
             return
 
-        self.enemy_preview_progress = min(
+        self.round_reveal["progress"] = min(
             1.0,
-            (now - self.enemy_preview_started_at) / max(self.ENEMY_PREVIEW_SECONDS, 0.001),
+            (now - self.round_reveal["started_at"]) / max(self.ROUND_REVEAL_SECONDS, 0.001),
         )
         if now < self.next_action_time:
             return
 
-        preview_action = self.enemy_preview_action
-        self._clear_enemy_preview()
-        event = self.battle_system.enemy_turn(preview_action)
-        if event is not None:
-            self.player.set_defense(False)
-            payload = dict(event)
-            label = payload.pop("label")
-            self._push_event("action", label, **payload)
-            if self.battle_system.state == BattleState.DEFEAT:
-                self.wave_manager.finish_run()
-                self.phase_label = "Defeat"
-                self._push_event(
-                    "defeat",
-                    f"Defeated at wave {self.wave_manager.current_wave}",
-                    target="center",
-                    wave=self.wave_manager.current_wave,
-                    best_wave=self.wave_manager.best_wave,
-                )
-            else:
-                self.phase_label = "Your turn"
-                self.next_action_time = time.monotonic() + self.turn_delay_seconds
-            self.last_input_gesture = None
-            self._reset_action_hold()
+        player_action = self.round_reveal.get("player_action")
+        enemy_action = self.round_reveal.get("enemy_action")
+        self._clear_round_reveal()
+        events = self.battle_system.resolve_simultaneous_round(player_action, enemy_action)
+        self._push_battle_events(events)
+
+        if self.battle_system.state == BattleState.DEFEAT:
+            self.wave_manager.finish_run()
+            self.phase_label = "Defeat"
+            self._push_event(
+                "defeat",
+                f"Defeated at wave {self.wave_manager.current_wave}",
+                target="center",
+                wave=self.wave_manager.current_wave,
+                best_wave=self.wave_manager.best_wave,
+            )
+        elif self.battle_system.state == BattleState.WAVE_CLEAR:
+            self.phase_label = "Wave clear"
+            self.next_action_time = now + 1.7
+            self._push_event(
+                "wave_clear",
+                f"Wave {self.wave_manager.current_wave} clear",
+                target="center",
+                wave=self.wave_manager.current_wave,
+            )
+        else:
+            self.enemy.prepare_action_weights()
+            self.phase_label = "Choose an action"
+            self.next_action_time = now + self.turn_delay_seconds
+
+        self.last_input_gesture = None
+        self._reset_action_hold()
 
     def reset_game(self):
         """Reset all game state."""
@@ -248,16 +266,20 @@ class GameManager:
         self.event_history.clear()
         self.phase_label = "Prepare the board"
         self._reset_action_hold()
-        self._clear_enemy_preview()
+        self._clear_round_reveal()
 
     def _turn_delay_remaining(self):
         remaining = self.next_action_time - time.monotonic()
         return max(0.0, remaining)
 
+    def _enemy_action_hint(self):
+        return self.enemy.get_action_probabilities()
+
     def get_game_state(self):
         """Return the current state used by HUD and game logic."""
         state = self.battle_system.state
         delay_remaining = self._turn_delay_remaining()
+        round_reveal = dict(self.round_reveal)
         return {
             "player": {
                 "hp": self.player.hp,
@@ -286,10 +308,12 @@ class GameManager:
             "turn_delay_remaining": delay_remaining,
             "can_act": state == BattleState.PLAYER_TURN and delay_remaining <= 0.0,
             "action_selection": dict(self.action_hold),
+            "enemy_action_hint": self._enemy_action_hint(),
+            "round_reveal": round_reveal,
             "enemy_preview": {
-                "active": state == BattleState.ENEMY_TURN and self.enemy_preview_action is not None,
-                "action": self.enemy_preview_action,
-                "progress": self.enemy_preview_progress,
-                "required_seconds": self.ENEMY_PREVIEW_SECONDS,
+                "active": False,
+                "action": None,
+                "progress": 0.0,
+                "required_seconds": self.ROUND_REVEAL_SECONDS,
             },
         }

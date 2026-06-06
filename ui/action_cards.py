@@ -61,28 +61,43 @@ class ActionCardRenderer:
         self.guard_effects.clear()
         self.seen_event_ids.clear()
 
-    def draw(self, frame, H, plane_size, game_state, events, enemy_pos):
+    def draw(self, frame, H, plane_size, game_state, events, enemy_pos, gesture_info=None):
         if H is None or not game_state:
             return frame
 
         selection = game_state.get("action_selection", {})
         battle_state = game_state.get("battle_state")
+        round_reveal = game_state.get("round_reveal", {})
+        reveal_active = bool(round_reveal.get("active"))
         can_select = battle_state == BattleState.PLAYER_TURN and game_state.get("can_act", False)
-        slots = self._card_slots(plane_size, selection if can_select else {})
+        reveal_selection = {
+            "active": reveal_active,
+            "action": round_reveal.get("player_action"),
+            "progress": round_reveal.get("progress", 0.0),
+        }
+        slot_selection = selection if can_select else reveal_selection
+        slots = self._card_slots(plane_size, slot_selection)
 
         self._draw_player_info(frame, H, plane_size, game_state)
         self._draw_enemy_hp(frame, H, plane_size, game_state, enemy_pos)
+        self._draw_enemy_action_hint(frame, H, game_state, enemy_pos)
+        self._draw_gesture_probability_panel(frame, H, plane_size, gesture_info)
 
         if can_select:
             for action in self.ACTIONS:
                 slot = slots[action["action"]]
                 self._draw_board_card(frame, H, slot, action, selection)
+        elif reveal_active:
+            selected_action = round_reveal.get("player_action")
+            for action in self.ACTIONS:
+                if action["action"] == selected_action:
+                    self._draw_board_card(frame, H, slots[action["action"]], action, reveal_selection)
+                    break
 
         self._add_effects_from_events(events, slots, enemy_pos)
-        self._draw_enemy_preview(frame, H, game_state, enemy_pos)
+        self._draw_round_reveal(frame, H, game_state, enemy_pos)
         self._draw_effects(frame, H)
         return frame
-
     def _card_slots(self, plane_size, selection):
         plane_width, plane_height = float(plane_size[0]), float(plane_size[1])
         card_w = min(52.0, plane_width * 0.225)
@@ -212,7 +227,7 @@ class ActionCardRenderer:
         scale = self._local_pixel_scale(H, enemy_pos)
         bar_w = int(np.clip(scale * float(plane_size[0]) * 0.58, 84, 168))
         bar_h = int(np.clip(scale * 8.0, 9, 15))
-        y_offset = int(np.clip(scale * 48.0, 46, 116))
+        y_offset = int(np.clip(scale * 82.0, 78, 168))
         cx = int(round(point[0]))
         cy = int(round(point[1])) - y_offset
         x1 = cx - bar_w // 2
@@ -240,6 +255,123 @@ class ActionCardRenderer:
         cv2.rectangle(frame, (x1, y1), (x1 + int(bar_w * ratio), y2), tuple(enemy.get("color", (70, 70, 210))), -1)
         cv2.rectangle(frame, (x1, y1), (x2, y2), (220, 205, 150), 1, cv2.LINE_AA)
 
+    def _draw_enemy_action_hint(self, frame, H, game_state, enemy_pos):
+        round_reveal = game_state.get("round_reveal", {})
+        if round_reveal.get("active"):
+            return
+        hint = game_state.get("enemy_action_hint") or {}
+        if not hint:
+            return
+        point = HomographyEstimator.transform_point(enemy_pos, H)
+        if point is None:
+            return
+
+        scale = self._local_pixel_scale(H, enemy_pos)
+        cx = int(round(point[0]))
+        cy = int(round(point[1] - np.clip(scale * 128.0, 116, 236)))
+        text = "  ".join(
+            [
+                f"ATK {self._format_probability_percent(hint.get('Attack', 0.0))}",
+                f"DEF {self._format_probability_percent(hint.get('Defend', 0.0))}",
+                f"SKL {self._format_probability_percent(hint.get('Skill', 0.0))}",
+            ]
+        )
+        width = 242
+        height = 25
+        x1 = max(4, min(frame.shape[1] - width - 4, cx - width // 2))
+        y1 = max(4, min(frame.shape[0] - height - 4, cy - height // 2))
+        roi = frame[y1 : y1 + height, x1 : x1 + width]
+        overlay = roi.copy()
+        cv2.rectangle(overlay, (0, 0), (width - 1, height - 1), (12, 12, 18), -1)
+        cv2.addWeighted(overlay, 0.58, roi, 0.42, 0, roi)
+        cv2.rectangle(frame, (x1, y1), (x1 + width, y1 + height), (96, 88, 64), 1, cv2.LINE_AA)
+        cv2.putText(frame, text, (x1 + 8, y1 + 17), cv2.FONT_HERSHEY_SIMPLEX, 0.38, (230, 222, 190), 1, cv2.LINE_AA)
+
+    @staticmethod
+    def _format_probability_percent(value):
+        percent = max(0.0, min(100.0, float(value) * 100.0))
+        truncated = np.floor(percent * 10.0) / 10.0
+        return f"{truncated:.1f}%"
+
+    def _draw_gesture_probability_panel(self, frame, H, plane_size, gesture_info):
+        if not gesture_info:
+            return
+        probabilities = gesture_info.get("class_probabilities") or {}
+        rows = [
+            ("FIST", float(probabilities.get("Fist", 0.0)), (70, 150, 255), {"Fist"}),
+            ("PALM", float(probabilities.get("Open_Palm", 0.0)), (80, 220, 255), {"Open_Palm"}),
+            (
+                "SCIS",
+                max(float(probabilities.get("V_Sign", 0.0)), float(probabilities.get("Gun_Sign", 0.0))),
+                (255, 120, 230),
+                {"V_Sign", "Gun_Sign"},
+            ),
+        ]
+        if max(row[1] for row in rows) <= 0.0:
+            return
+
+        active = gesture_info.get("smoothed_gesture")
+        if active == "Unknown":
+            active = None
+        image = self._gesture_probability_image(rows, active)
+
+        plane_width, plane_height = float(plane_size[0]), float(plane_size[1])
+        panel_w = min(58.0, plane_width * 0.38)
+        panel_h = panel_w * 1.02
+        x1 = plane_width + plane_width * 0.055
+        y1 = plane_height * 0.34
+        rect = [
+            (x1, y1),
+            (x1 + panel_w, y1),
+            (x1 + panel_w, y1 + panel_h),
+            (x1, y1 + panel_h),
+        ]
+        dst = self._project_points(rect, H)
+        if dst is None:
+            return
+        self._warp_rgba(frame, image, dst)
+        cv2.polylines(frame, [dst.astype(np.int32)], True, (150, 138, 96), 1, cv2.LINE_AA)
+
+    def _gesture_probability_image(self, rows, active):
+        key = ("gesture_probs", active) + tuple(int(round(row[1] * 100.0)) for row in rows)
+        cached = self.panel_cache.get(key)
+        if cached is not None:
+            return cached
+
+        width, height = 230, 220
+        image = np.zeros((height, width, 4), dtype=np.uint8)
+        image[:, :, :3] = (14, 13, 20)
+        image[:, :, 3] = 214
+        cv2.rectangle(image, (5, 5), (width - 6, height - 6), (86, 80, 58, 235), 2, cv2.LINE_AA)
+        cv2.putText(image, "GESTURE", (18, 34), cv2.FONT_HERSHEY_SIMPLEX, 0.72, (244, 236, 202, 255), 2, cv2.LINE_AA)
+
+        bar_x, bar_w, bar_h = 82, 104, 18
+        for index, (label, probability, color, aliases) in enumerate(rows):
+            y = 70 + index * 45
+            is_active = active in aliases
+            label_color = (255, 252, 218, 255) if is_active else (205, 198, 174, 255)
+            cv2.putText(image, label, (18, y + 14), cv2.FONT_HERSHEY_SIMPLEX, 0.48, label_color, 1, cv2.LINE_AA)
+            cv2.rectangle(image, (bar_x, y), (bar_x + bar_w, y + bar_h), (38, 36, 46, 245), -1)
+            fill_w = int(round(bar_w * max(0.0, min(1.0, probability))))
+            if fill_w > 0:
+                cv2.rectangle(image, (bar_x, y), (bar_x + fill_w, y + bar_h), color + (255,), -1)
+            cv2.rectangle(image, (bar_x, y), (bar_x + bar_w, y + bar_h), (150, 140, 104, 255), 1, cv2.LINE_AA)
+            cv2.putText(
+                image,
+                f"{int(round(probability * 100.0)):02d}",
+                (bar_x + bar_w + 10, y + 14),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.44,
+                label_color,
+                1,
+                cv2.LINE_AA,
+            )
+            if is_active:
+                cv2.rectangle(image, (11, y - 7), (width - 12, y + 27), (95, 235, 255, 255), 1, cv2.LINE_AA)
+
+        self.panel_cache[key] = image
+        return image
+
     def _draw_board_card(self, frame, H, slot, action, selection):
         image = self._load_card(action["path"], action["label"], action["color"])
         dst = self._project_points(slot["rect"], H)
@@ -263,20 +395,20 @@ class ActionCardRenderer:
         cv2.line(frame, tuple(left.astype(int)), tuple(right.astype(int)), (45, 45, 55), 5, cv2.LINE_AA)
         cv2.line(frame, tuple(left.astype(int)), tuple(end.astype(int)), color, 5, cv2.LINE_AA)
 
-    def _draw_enemy_preview(self, frame, H, game_state, enemy_pos):
-        preview = game_state.get("enemy_preview", {})
-        if not preview.get("active"):
+    def _draw_round_reveal(self, frame, H, game_state, enemy_pos):
+        reveal = game_state.get("round_reveal", {})
+        if not reveal.get("active"):
             return
 
-        action = preview.get("action")
+        action = reveal.get("enemy_action")
         point = HomographyEstimator.transform_point(enemy_pos, H)
         if point is None:
             return
 
         image = self._load_card(self.ENEMY_CARD_PATHS.get(action), str(action or "ACTION").upper(), (80, 80, 255))
         scale = self._local_pixel_scale(H, enemy_pos)
-        center = (int(point[0]), int(point[1] - np.clip(scale * 86.0, 90, 160)))
-        card_w, card_h = 92, 124
+        center = (int(point[0]), int(point[1] - np.clip(scale * 92.0, 96, 172)))
+        card_w, card_h = 100, 135
         x1 = center[0] - card_w // 2
         y1 = center[1] - card_h // 2
         dst = np.asarray(
@@ -289,13 +421,20 @@ class ActionCardRenderer:
             dtype=np.float32,
         )
         self._warp_rgba(frame, image, dst)
-        cv2.polylines(frame, [dst.astype(np.int32)], True, (90, 120, 255), 2, cv2.LINE_AA)
-        self._draw_progress_on_card(frame, dst, float(preview.get("progress", 0.0)), (90, 120, 255))
+        cv2.polylines(frame, [dst.astype(np.int32)], True, (90, 120, 255), 3, cv2.LINE_AA)
+        self._draw_progress_on_card(frame, dst, float(reveal.get("progress", 0.0)), (90, 120, 255))
+
+        player_action = reveal.get("player_action", "?")
+        label = f"{player_action}  VS  {action}"
+        label_x = max(8, min(frame.shape[1] - 260, center[0] - 130))
+        label_y = max(28, y1 - 12)
+        cv2.rectangle(frame, (label_x - 8, label_y - 23), (label_x + 260, label_y + 6), (8, 8, 14), -1)
+        cv2.putText(frame, label, (label_x, label_y), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (245, 235, 190), 2, cv2.LINE_AA)
 
     def _add_effects_from_events(self, events, slots, enemy_pos):
         now = time.monotonic()
         for event in events:
-            event_id = (event.get("time"), event.get("source"), event.get("kind"), event.get("target"), event.get("label"))
+            event_id = (event.get("time"), event.get("source"), event.get("kind"), event.get("target"), event.get("label"), event.get("result"))
             if event_id in self.seen_event_ids:
                 continue
             self.seen_event_ids.add(event_id)
@@ -304,7 +443,9 @@ class ActionCardRenderer:
                 continue
 
             kind = event.get("kind")
-            if kind in ("Strike", "Shot"):
+            damage = int(event.get("damage", 0) or 0)
+            result = event.get("result")
+            if kind in ("Strike", "Shot") and damage > 0:
                 start = slots.get(kind, {}).get("center")
                 if start is None:
                     continue
@@ -318,11 +459,10 @@ class ActionCardRenderer:
                         "color": (255, 120, 230) if kind == "Shot" else (70, 150, 255),
                     }
                 )
-            elif kind == "Guard":
+            elif kind == "Guard" and result in ("heal", "block"):
                 center = slots.get("Guard", {}).get("center")
                 if center is not None:
                     self.guard_effects.append({"center": center, "start_time": now, "duration": 0.85})
-
     def _draw_effects(self, frame, H):
         now = time.monotonic()
         kept_projectiles = []

@@ -50,9 +50,9 @@ class HUD:
         state = game_state.get("battle_state")
         if state == BattleState.PLAYER_TURN and game_state.get("can_act"):
             phase = "Choose an action"
-        elif state == BattleState.ENEMY_TURN:
-            preview = game_state.get("enemy_preview", {})
-            phase = f"Enemy: {preview.get('action', '...')}" if preview.get("active") else "Enemy turn"
+        elif state == BattleState.ROUND_REVEAL:
+            reveal = game_state.get("round_reveal", {})
+            phase = f"Reveal: {reveal.get('player_action', '?')} vs {reveal.get('enemy_action', '?')}"
 
         HUD._text(frame, f"Wave {wave}  Best {best}", 20, 28, 0.56, (255, 245, 210), 2)
         HUD._text(frame, phase, 20, 48, 0.42, (120, 230, 255), 1)

@@ -9,7 +9,9 @@ class EnemyType:
     base_hp: int
     base_damage: int
     color: tuple
-    action_weights: dict
+    full_health_action_weights: dict
+    zero_health_action_weights: dict
+    action_weight_random_delta: float
     model_path: str | None = None
     ground_model_path: str | None = None
 
@@ -24,7 +26,9 @@ class WaveManager:
                 base_hp=50,
                 base_damage=6,
                 color=(50, 200, 50),
-                action_weights={"Attack": 0.50, "Defend": 0.30, "Skill": 0.20},
+                full_health_action_weights={"Attack": 0.50, "Defend": 0.30, "Skill": 0.20},
+                zero_health_action_weights={"Attack": 0.35, "Defend": 0.45, "Skill": 0.20},
+                action_weight_random_delta=0.07,
                 model_path=str(Path("assets") / "models" / "Slime.glb"),
                 ground_model_path=str(Path("assets") / "models" / "Grass.glb"),
             ),
@@ -33,7 +37,9 @@ class WaveManager:
                 base_hp=60,
                 base_damage=10,
                 color=(200, 200, 200),
-                action_weights={"Attack": 0.55, "Defend": 0.35, "Skill": 0.10},
+                full_health_action_weights={"Attack": 0.55, "Defend": 0.35, "Skill": 0.10},
+                zero_health_action_weights={"Attack": 0.70, "Defend": 0.15, "Skill": 0.15},
+                action_weight_random_delta=0.06,
                 model_path=str(Path("assets") / "models" / "Skeleton.glb"),
                 ground_model_path=str(Path("assets") / "models" / "StoneGround.glb"),
             ),
@@ -42,7 +48,9 @@ class WaveManager:
                 base_hp=40,
                 base_damage=8,
                 color=(150, 150, 255),
-                action_weights={"Attack": 0.50, "Defend": 0.20, "Skill": 0.30},
+                full_health_action_weights={"Attack": 0.50, "Defend": 0.20, "Skill": 0.30},
+                zero_health_action_weights={"Attack": 0.35, "Defend": 0.15, "Skill": 0.50},
+                action_weight_random_delta=0.09,
                 model_path=str(Path("assets") / "models" / "Ghost.glb"),
                 ground_model_path=str(Path("assets") / "models" / "BlackStoneGround.glb"),
             )

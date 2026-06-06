@@ -23,6 +23,8 @@ class GestureDetector:
         lower_margin=0.18,
         high_confidence=0.78,
         high_margin=0.32,
+        shot_confidence_bonus=0.06,
+        shot_margin_bonus=0.08,
     ):
         self.model_path = self._resolve_model_path(model_path)
         self.model = None
@@ -35,6 +37,9 @@ class GestureDetector:
         self.lower_margin = lower_margin
         self.high_confidence = high_confidence
         self.high_margin = high_margin
+        self.shot_gestures = {"V_Sign", "Gun_Sign"}
+        self.shot_confidence_bonus = shot_confidence_bonus
+        self.shot_margin_bonus = shot_margin_bonus
         self.active_streams = {}
 
         if self.model_path is not None:
@@ -94,6 +99,7 @@ class GestureDetector:
                     f"Expected {len(self.gesture_classes)} classes."
                 )
                 return self._unknown()
+            class_probabilities = self._class_probability_dict(probabilities)
 
             gesture_idx = int(np.argmax(probabilities))
             confidence = float(probabilities[gesture_idx])
@@ -103,6 +109,9 @@ class GestureDetector:
             was_active = self.active_streams.get(stream_id, False)
             required_confidence = self.lower_confidence if was_active else self.high_confidence
             required_margin = self.lower_margin if was_active else self.high_margin
+            if gesture in self.shot_gestures:
+                required_confidence += self.shot_confidence_bonus
+                required_margin += self.shot_margin_bonus
 
             if confidence < required_confidence or margin < required_margin:
                 self._mark_stream_unknown(stream_id)
@@ -113,6 +122,7 @@ class GestureDetector:
                     "margin": margin,
                     "second_confidence": second_confidence,
                     "raw_gesture": gesture,
+                    "class_probabilities": class_probabilities,
                 }
 
             smoothing_window = self.smoothing_windows.setdefault(stream_id, deque(maxlen=self.smoothing_size))
@@ -127,6 +137,7 @@ class GestureDetector:
                 "margin": margin,
                 "second_confidence": second_confidence,
                 "raw_gesture": gesture,
+                "class_probabilities": class_probabilities,
             }
         except Exception as exc:
             print(f"Gesture inference error: {exc}")
@@ -171,6 +182,12 @@ class GestureDetector:
 
         return None
 
+    def _class_probability_dict(self, probabilities):
+        return {
+            label: float(probabilities[index])
+            for index, label in enumerate(self.gesture_classes)
+        }
+
     @staticmethod
     def _second_best_probability(probabilities, best_idx):
         if probabilities.shape[0] <= 1:
@@ -188,4 +205,5 @@ class GestureDetector:
             "margin": 0.0,
             "second_confidence": 0.0,
             "raw_gesture": "Unknown",
+            "class_probabilities": {},
         }

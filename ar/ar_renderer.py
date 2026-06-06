@@ -17,7 +17,7 @@ class ARRenderer:
         self.max_homography_samples = 18
         self.model_loader = ModelLoader()
         self.pbr_renderer = PyrenderModelRenderer()
-        self.ground_model_scale = 1.22
+        self.ground_model_scale = 1.4
         self.ground_height_offset = -1.0
         self.enemy_model_scale = 0.82
         self.enemy_fallback_scale = 0.58

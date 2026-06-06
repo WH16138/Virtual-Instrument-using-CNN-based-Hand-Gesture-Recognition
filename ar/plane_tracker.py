@@ -99,9 +99,11 @@ class PlaneTracker:
     def track_plane(self, frame, hand_landmarks=None, debug=False):
         self.frame_index += 1
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        self.last_reject_reason = None
+        if self.last_gray is not None and self.last_gray.shape[:2] != gray.shape[:2]:
+            self._handle_frame_size_change(gray.shape)
         self.debug_enabled = bool(debug or not self.is_registered)
         self.hand_occlusion_mask = self._build_hand_occlusion_mask(hand_landmarks, gray.shape)
-        self.last_reject_reason = None
 
         if not self.is_registered:
             self.debug_marker_candidates = []
@@ -181,6 +183,21 @@ class PlaneTracker:
             "marker_quad_score": self.last_marker_quad_score,
             "selected_marker_centers": self.last_selected_marker_centers,
         }
+
+    def _handle_frame_size_change(self, new_shape):
+        """Drop frame-size-dependent tracking caches after phone rotation/resolution changes."""
+        self.last_gray = None
+        self.last_corners = None
+        self.last_homography = None
+        self.smoothed_homography = None
+        self.last_marker_centers = None
+        self.last_marker_observed = None
+        self.last_door_image_points = None
+        self.last_door_world_points = None
+        self.hand_occlusion_mask = None
+        self.last_homography_confidence = 0.0
+        self.missed_frames = self.max_missed_frames + 1
+        self.last_reject_reason = f"Frame size changed to {int(new_shape[1])}x{int(new_shape[0])}; re-detecting board"
 
     def _current_door_redetection_interval(self):
         if self.missed_frames > 0 or self.last_homography_confidence < 0.62:
@@ -426,8 +443,21 @@ class PlaneTracker:
         edge_ratio = float(np.max(edge_lengths) / max(np.min(edge_lengths), 1.0))
         if edge_ratio > 2.8:
             return None, 0.0
+
+        line_support_score = self._quad_line_support_score(boundary, ordered)
+        if line_support_score is None or line_support_score < 0.30:
+            return None, 0.0
+
         rectangularity = area / max(cv2.contourArea(ordered.astype(np.float32)), 1.0)
-        score = float(np.clip((1.0 / edge_ratio) * 0.62 + np.clip(rectangularity, 0.0, 1.0) * 0.38, 0.0, 1.0))
+        score = float(
+            np.clip(
+                (1.0 / edge_ratio) * 0.34
+                + np.clip(rectangularity, 0.0, 1.0) * 0.26
+                + line_support_score * 0.40,
+                0.0,
+                1.0,
+            )
+        )
         return ordered, score
 
     def _order_quad_points(self, points):
@@ -489,6 +519,10 @@ class PlaneTracker:
         if min_border < 0.024:
             return None
         border_score = float(np.clip((min_border - 0.024) / 0.18, 0.0, 1.0))
+        continuity_score = self._door_border_continuity_score(dark)
+        if continuity_score is None:
+            return None
+        border_score = float(border_score * 0.58 + continuity_score * 0.42)
 
         interior_lo = int(round(size * 0.16))
         interior_hi = int(round(size * 0.84))
@@ -518,6 +552,36 @@ class PlaneTracker:
             if best is None or candidate["score"] > best["score"]:
                 best = candidate
         return best
+
+    def _door_border_continuity_score(self, dark):
+        size = int(dark.shape[0])
+        if size <= 16:
+            return None
+
+        along_lo = int(round(size * 0.08))
+        along_hi = int(round(size * 0.92))
+        band_lo = 0
+        band_hi = max(4, int(round(size * 0.075)))
+        profiles = [
+            np.max(dark[band_lo:band_hi, along_lo:along_hi], axis=0),
+            np.max(dark[size - band_hi:size - band_lo if band_lo > 0 else size, along_lo:along_hi], axis=0),
+            np.max(dark[along_lo:along_hi, band_lo:band_hi], axis=1),
+            np.max(dark[along_lo:along_hi, size - band_hi:size - band_lo if band_lo > 0 else size], axis=1),
+        ]
+
+        scores = []
+        for profile in profiles:
+            if profile.size < 8:
+                return None
+            bins = np.array_split(profile.astype(np.float32), 12)
+            bin_values = np.asarray([float(np.mean(item)) if item.size else 0.0 for item in bins], dtype=np.float32)
+            coverage = float(np.count_nonzero(bin_values >= 0.08) / max(len(bin_values), 1))
+            strength = float(np.mean(profile))
+            if coverage < 0.50 or strength < 0.030:
+                return None
+            scores.append(float(np.clip(coverage * 0.72 + np.clip(strength / 0.24, 0.0, 1.0) * 0.28, 0.0, 1.0)))
+
+        return float(np.mean(scores) * 0.70 + np.min(scores) * 0.30)
 
     def _door_symbol_candidates(self, dark, blurred):
         size = int(dark.shape[0])
@@ -740,6 +804,9 @@ class PlaneTracker:
 
     def _track_last_door_points(self, gray):
         if self.last_gray is None or self.last_door_image_points is None or self.last_door_world_points is None:
+            return None
+        if self.last_gray.shape[:2] != gray.shape[:2]:
+            self._handle_frame_size_change(gray.shape)
             return None
         previous = np.asarray(self.last_door_image_points, dtype=np.float32)
         world = np.asarray(self.last_door_world_points, dtype=np.float32)
@@ -1019,6 +1086,9 @@ class PlaneTracker:
 
     def _track_last_markers(self, gray):
         if self.last_marker_centers is None or self.last_gray is None:
+            return None
+        if self.last_gray.shape[:2] != gray.shape[:2]:
+            self._handle_frame_size_change(gray.shape)
             return None
 
         previous_points = np.asarray(self.last_marker_centers, dtype=np.float32).reshape(-1, 1, 2)
@@ -2840,6 +2910,57 @@ class PlaneTracker:
             near_mask = normal_distance <= threshold
             selected = points[along_mask & near_mask]
         return selected.astype(np.float32)
+
+    def _quad_line_support_score(self, boundary, corners):
+        boundary = np.asarray(boundary, dtype=np.float32)
+        corners = np.asarray(corners, dtype=np.float32)
+        if boundary.ndim != 2 or boundary.shape[1] != 2 or corners.shape != (4, 2):
+            return None
+        if len(boundary) < 18 or not np.isfinite(boundary).all() or not np.isfinite(corners).all():
+            return None
+
+        edge_scores = []
+        for start, end in ((0, 1), (1, 2), (2, 3), (3, 0)):
+            p1 = corners[start]
+            p2 = corners[end]
+            edge = p2 - p1
+            edge_length = float(np.linalg.norm(edge))
+            if edge_length <= 1e-6:
+                return None
+
+            edge_points = self._points_near_edge(boundary, p1, p2)
+            min_points = max(8, int(round(edge_length * 0.035)))
+            if len(edge_points) < min_points:
+                return None
+
+            line = self._fit_line_tls(edge_points)
+            if line is None:
+                return None
+            distances = np.abs(edge_points[:, 0] * line[0] + edge_points[:, 1] * line[1] + line[2])
+            if not np.isfinite(distances).all():
+                return None
+
+            direction = edge / edge_length
+            projections = (edge_points - p1) @ direction
+            in_segment = projections[(projections >= 0.0) & (projections <= edge_length)]
+            if len(in_segment) < max(5, min_points // 2):
+                return None
+
+            bins = np.clip(np.floor((in_segment / max(edge_length, 1.0)) * 8).astype(np.int32), 0, 7)
+            counts = np.bincount(bins, minlength=8)
+            coverage = float(np.count_nonzero(counts > 0) / 8.0)
+            median_error = float(np.median(distances)) / edge_length
+            p85_error = float(np.percentile(distances, 85)) / edge_length
+            residual = median_error * 0.35 + p85_error * 0.65
+            if residual > 0.078 or coverage < 0.48:
+                return None
+
+            residual_score = float(np.clip((0.078 - residual) / 0.060, 0.0, 1.0))
+            coverage_score = float(np.clip((coverage - 0.48) / 0.42, 0.0, 1.0))
+            density_score = float(np.clip(len(edge_points) / max(edge_length * 0.22, 1.0), 0.0, 1.0))
+            edge_scores.append(residual_score * 0.58 + coverage_score * 0.32 + density_score * 0.10)
+
+        return float(np.mean(edge_scores) * 0.72 + np.min(edge_scores) * 0.28)
 
     def _fit_line_tls(self, points):
         if len(points) < 2:

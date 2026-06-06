@@ -381,6 +381,29 @@ def choose_best_gesture(left_info, right_info):
     return right_info if right_info["confidence"] > left_info["confidence"] else left_info
 
 
+def mirror_detection_to_original_frame(detection_result):
+    """Map hand landmarks detected on a horizontally flipped frame back to the display frame."""
+    if not detection_result:
+        return dict(EMPTY_HAND_DETECTION)
+
+    def mirror_landmarks(landmarks):
+        if landmarks is None:
+            return None
+        mirrored = np.asarray(landmarks, dtype=np.float32).copy()
+        if mirrored.ndim == 2 and mirrored.shape[1] >= 2:
+            mirrored[:, 0] = 1.0 - mirrored[:, 0]
+        return mirrored
+
+    return {
+        "left_hand": mirror_landmarks(detection_result.get("left_hand")),
+        "right_hand": mirror_landmarks(detection_result.get("right_hand")),
+        "handedness": list(detection_result.get("handedness") or []),
+        "hand_landmarks": [
+            mirrored for mirrored in (mirror_landmarks(item) for item in detection_result.get("hand_landmarks") or [])
+            if mirrored is not None
+        ],
+    }
+
 def should_show_tracking_attention(tracking_result):
     if not tracking_result or not tracking_result.get("success"):
         return True
@@ -459,6 +482,7 @@ def main():
     debug_mode = False
     setup_gesture_counter = 0
     viewport_prepared = False
+    last_frame_shape = None
 
     frame_count = 0
     fps_clock = cv2.getTickCount()
@@ -489,18 +513,23 @@ def main():
                 continue
 
             frame_count += 1
+            current_frame_shape = frame.shape[:2]
+            if last_frame_shape is not None and last_frame_shape != current_frame_shape:
+                viewport_prepared = False
+            last_frame_shape = current_frame_shape
             #frame = cv2.flip(frame, 1)
             fps = cv2.getTickFrequency() / max(cv2.getTickCount() - fps_clock, 1)
             fps_clock = cv2.getTickCount()
 
             vision_interval = VISION_INTERVAL_FRAMES if plane_registered else PRE_REGISTRATION_VISION_INTERVAL_FRAMES
             if frame_count % vision_interval == 0:
-                vision_frame = resize_for_vision(frame, HAND_DETECTION_MAX_DIM)
-                last_hand_detection = hand_tracker.detect_hands(vision_frame)
-                last_gesture_info_left = gesture_detector.detect_gesture(last_hand_detection["left_hand"], "left")
-                last_gesture_info_right = gesture_detector.detect_gesture(last_hand_detection["right_hand"], "right")
+                recognition_frame = cv2.flip(frame, 1)
+                vision_frame = resize_for_vision(recognition_frame, HAND_DETECTION_MAX_DIM)
+                recognition_hand_detection = hand_tracker.detect_hands(vision_frame)
+                last_gesture_info_left = gesture_detector.detect_gesture(recognition_hand_detection["left_hand"], "left")
+                last_gesture_info_right = gesture_detector.detect_gesture(recognition_hand_detection["right_hand"], "right")
                 last_gesture_info = choose_best_gesture(last_gesture_info_left, last_gesture_info_right)
-
+                last_hand_detection = mirror_detection_to_original_frame(recognition_hand_detection)
             hand_detection = last_hand_detection
             gesture_info = last_gesture_info
 
@@ -552,7 +581,12 @@ def main():
 
             game_state = game_manager.get_game_state()
             events = game_manager.consume_events() if game_started else []
-            floating_text.add_from_events(events, game_manager.player_pos, game_manager.enemy_pos)
+            player_feedback_pos = (
+                (ar_renderer.plane_width * 0.34, ar_renderer.plane_height + 31.0)
+                if H is not None and game_started
+                else game_manager.player_pos
+            )
+            floating_text.add_from_events(events, game_manager.player_pos, game_manager.enemy_pos, player_feedback_pos)
             tracking_needs_attention = should_show_tracking_attention(current_tracking_result)
             setup_hold_progress = setup_gesture_counter / float(SETUP_GESTURE_HOLD_FRAMES)
 
@@ -572,6 +606,7 @@ def main():
                     game_state,
                     events,
                     game_manager.enemy_pos,
+                    gesture_info=gesture_info,
                 )
                 frame = floating_text.draw(frame, H, HomographyEstimator.transform_point)
 
@@ -612,6 +647,7 @@ def main():
                 debug_mode = False
                 setup_gesture_counter = 0
                 viewport_prepared = False
+                last_frame_shape = None
                 freshness_grace_until = 0.0
                 print("Game reset.")
     finally:
