@@ -66,24 +66,30 @@ class ActionCardRenderer:
             return frame
 
         selection = game_state.get("action_selection", {})
+        reward_selection = game_state.get("reward_selection", {})
         battle_state = game_state.get("battle_state")
         round_reveal = game_state.get("round_reveal", {})
         reveal_active = bool(round_reveal.get("active"))
+        reward_active = battle_state == BattleState.REWARD_SELECT and bool(reward_selection.get("active"))
         can_select = battle_state == BattleState.PLAYER_TURN and game_state.get("can_act", False)
         reveal_selection = {
             "active": reveal_active,
             "action": round_reveal.get("player_action"),
             "progress": round_reveal.get("progress", 0.0),
         }
-        slot_selection = selection if can_select else reveal_selection
-        slots = self._card_slots(plane_size, slot_selection)
+        slots = self._card_slots(plane_size, selection if can_select else reveal_selection)
 
         self._draw_player_info(frame, H, plane_size, game_state)
-        self._draw_enemy_hp(frame, H, plane_size, game_state, enemy_pos)
-        self._draw_enemy_action_hint(frame, H, game_state, enemy_pos)
+        if not reward_active:
+            self._draw_enemy_hp(frame, H, plane_size, game_state, enemy_pos)
+            self._draw_enemy_action_hint(frame, H, game_state, enemy_pos)
         self._draw_gesture_probability_panel(frame, H, plane_size, gesture_info)
+        self._draw_augment_badges(frame, H, plane_size, game_state)
 
-        if can_select:
+        if reward_active:
+            reward_slots = self._reward_card_slots(H, plane_size, enemy_pos, reward_selection)
+            self._draw_reward_cards(frame, H, reward_slots, reward_selection)
+        elif can_select:
             for action in self.ACTIONS:
                 slot = slots[action["action"]]
                 self._draw_board_card(frame, H, slot, action, selection)
@@ -98,6 +104,7 @@ class ActionCardRenderer:
         self._draw_round_reveal(frame, H, game_state, enemy_pos)
         self._draw_effects(frame, H)
         return frame
+
     def _card_slots(self, plane_size, selection):
         plane_width, plane_height = float(plane_size[0]), float(plane_size[1])
         card_w = min(52.0, plane_width * 0.225)
@@ -132,14 +139,15 @@ class ActionCardRenderer:
         max_hp = max(int(player.get("max_hp", 1)), 1)
         hp = max(0, int(player.get("hp", 0)))
         ratio = hp / float(max_hp)
-        image = self._player_info_image(hp, max_hp, ratio)
+        growth = player.get("growth", {}) or {}
+        image = self._player_info_image(hp, max_hp, ratio, growth)
 
         plane_width, plane_height = float(plane_size[0]), float(plane_size[1])
         rect = [
             (5.0, plane_height + 8.0),
             (plane_width * 0.64, plane_height + 8.0),
-            (plane_width * 0.64, plane_height + 39.0),
-            (5.0, plane_height + 39.0),
+            (plane_width * 0.64, plane_height + 45.0),
+            (5.0, plane_height + 45.0),
         ]
         dst = self._project_points(rect, H)
         if dst is None:
@@ -147,19 +155,21 @@ class ActionCardRenderer:
         self._warp_rgba(frame, image, dst)
         cv2.polylines(frame, [dst.astype(np.int32)], True, (210, 190, 120), 1, cv2.LINE_AA)
 
-    def _player_info_image(self, hp, max_hp, ratio):
-        key = (int(hp), int(max_hp), int(round(ratio * 100)))
+    def _player_info_image(self, hp, max_hp, ratio, growth=None):
+        stat_line = self._player_stat_line(hp, max_hp, growth or {})
+        key = (int(hp), int(max_hp), int(round(ratio * 100)), stat_line)
         cached = self.panel_cache.get(key)
         if cached is not None:
             return cached
 
-        width, height = 420, 132
+        width, height = 420, 150
         if Image is None:
             image = np.zeros((height, width, 4), dtype=np.uint8)
             image[:, :, :3] = (24, 20, 18)
             image[:, :, 3] = 210
-            cv2.putText(image, "PLAYER", (24, 42), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (245, 238, 210, 255), 2, cv2.LINE_AA)
-            self._draw_bgra_bar(image, 24, 72, width - 48, 24, ratio, (60, 190, 90), f"HP {hp}/{max_hp}")
+            cv2.putText(image, "PLAYER", (24, 38), cv2.FONT_HERSHEY_SIMPLEX, 0.95, (245, 238, 210, 255), 2, cv2.LINE_AA)
+            cv2.putText(image, stat_line, (24, 76), cv2.FONT_HERSHEY_SIMPLEX, 0.52, (230, 218, 178, 255), 1, cv2.LINE_AA)
+            self._draw_bgra_bar(image, 24, 104, width - 48, 24, ratio, (60, 190, 90), f"HP {hp}/{max_hp}")
             self.panel_cache[key] = image
             return image
 
@@ -170,9 +180,11 @@ class ActionCardRenderer:
 
         title_font = self._font(32, bold=True)
         value_font = self._font(18, bold=False)
-        draw.text((24, 20), "\uD50C\uB808\uC774\uC5B4", font=title_font, fill=(248, 238, 205, 255))
+        stat_font = self._font(15, bold=False)
+        draw.text((24, 16), "\uD50C\uB808\uC774\uC5B4", font=title_font, fill=(248, 238, 205, 255))
+        draw.text((24, 60), stat_line, font=stat_font, fill=(230, 218, 178, 255))
 
-        bar_x, bar_y, bar_w, bar_h = 24, 74, width - 48, 24
+        bar_x, bar_y, bar_w, bar_h = 24, 104, width - 48, 24
         draw.rectangle((bar_x, bar_y, bar_x + bar_w, bar_y + bar_h), fill=(34, 32, 40, 245), outline=(210, 190, 140, 255), width=2)
         draw.rectangle((bar_x + 2, bar_y + 2, bar_x + 2 + int((bar_w - 4) * ratio), bar_y + bar_h - 2), fill=(72, 196, 92, 255))
         draw.text((bar_x + 10, bar_y + 1), f"HP {hp}/{max_hp}", font=value_font, fill=(255, 252, 235, 255))
@@ -181,6 +193,23 @@ class ActionCardRenderer:
         bgra = rgba[:, :, [2, 1, 0, 3]].copy()
         self.panel_cache[key] = bgra
         return bgra
+
+    @staticmethod
+    def _player_stat_line(hp, max_hp, growth):
+        attack_power = int(growth.get("attack_power", 15) or 15)
+        strike_bonus = int(growth.get("strike_bonus", 0) or 0)
+        guard_bonus = int(growth.get("guard_bonus", 0) or 0)
+        guard_heal_ratio_bonus = float(growth.get("guard_heal_ratio_bonus", 0.0) or 0.0)
+        shot_bonus = int(growth.get("shot_bonus", 0) or 0)
+        damage_multiplier = float(growth.get("damage_multiplier", 1.0) or 1.0)
+        heal_multiplier = float(growth.get("heal_multiplier", 1.0) or 1.0)
+
+        strike = max(0, int(round((attack_power + strike_bonus) * damage_multiplier)))
+        shot = max(0, int(round((attack_power + shot_bonus) * 2 * damage_multiplier)))
+        missing_hp = max(0, int(max_hp) - int(hp))
+        base_heal = max(5, int(round(missing_hp * (0.10 + guard_heal_ratio_bonus))))
+        guard_heal = max(0, int(round((base_heal + guard_bonus) * heal_multiplier)))
+        return f"ATK {attack_power}  STR {strike}  SHOT {shot}  HEAL {guard_heal}"
 
     def _font(self, size, bold=False):
         key = (size, bold)
@@ -372,6 +401,240 @@ class ActionCardRenderer:
         self.panel_cache[key] = image
         return image
 
+
+    def _draw_augment_badges(self, frame, H, plane_size, game_state):
+        player = game_state.get("player", {}) or {}
+        growth = player.get("growth", {}) or {}
+        augments = growth.get("augments") or []
+        if not augments:
+            return
+
+        plane_width, plane_height = float(plane_size[0]), float(plane_size[1])
+        panel_w = min(58.0, plane_width * 0.38)
+        panel_h = panel_w * 1.02
+        badge_w = panel_w
+        badge_h = 11.5
+        gap = 3.0
+        x1 = plane_width + plane_width * 0.055
+        y1 = plane_height * 0.34 + panel_h + 7.0
+        max_visible = 6
+
+        visible = augments[:max_visible]
+        if len(augments) > max_visible:
+            visible = list(visible) + [
+                {
+                    "flag": "more",
+                    "label": f"+{len(augments) - max_visible}",
+                    "short_label": f"+{len(augments) - max_visible}",
+                    "description": "More augments",
+                }
+            ]
+
+        for index, augment in enumerate(visible):
+            top = y1 + index * (badge_h + gap)
+            rect = [
+                (x1, top),
+                (x1 + badge_w, top),
+                (x1 + badge_w, top + badge_h),
+                (x1, top + badge_h),
+            ]
+            dst = self._project_points(rect, H)
+            if dst is None:
+                continue
+            image = self._augment_badge_image(augment)
+            self._warp_rgba(frame, image, dst)
+            cv2.polylines(frame, [dst.astype(np.int32)], True, (215, 155, 225), 1, cv2.LINE_AA)
+
+    def _augment_badge_image(self, augment):
+        label = str(augment.get("label") or augment.get("flag") or "Augment")
+        short_label = str(augment.get("short_label") or label[:10])
+        key = ("augment_badge", label, short_label)
+        cached = self.panel_cache.get(key)
+        if cached is not None:
+            return cached
+
+        width, height = 230, 46
+        image = np.zeros((height, width, 4), dtype=np.uint8)
+        image[:, :, :3] = (20, 16, 28)
+        image[:, :, 3] = 218
+        cv2.rectangle(image, (4, 4), (width - 5, height - 5), (225, 130, 235, 245), 2, cv2.LINE_AA)
+        cv2.rectangle(image, (11, 11), (33, height - 12), (95, 48, 108, 245), -1)
+        cv2.circle(image, (22, height // 2), 6, (245, 188, 255, 255), -1, cv2.LINE_AA)
+
+        if Image is not None:
+            rgba = image[:, :, [2, 1, 0, 3]].copy()
+            canvas = Image.fromarray(rgba, "RGBA")
+            draw = ImageDraw.Draw(canvas)
+            font = self._font(17, bold=True)
+            draw.text((42, 11), label[:14], font=font, fill=(252, 235, 255, 255))
+            image = np.asarray(canvas, dtype=np.uint8)[:, :, [2, 1, 0, 3]].copy()
+        else:
+            cv2.putText(image, short_label[:10], (42, 29), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (252, 235, 255, 255), 1, cv2.LINE_AA)
+
+        self.panel_cache[key] = image
+        return image
+
+    def _reward_card_slots(self, H, plane_size, enemy_pos, selection):
+        center = HomographyEstimator.transform_point(enemy_pos, H)
+        if center is None:
+            return {}
+        center = np.asarray(center, dtype=np.float32)
+
+        scale = self._local_pixel_scale(H, enemy_pos)
+        plane_width = float(plane_size[0])
+        reward_card_scale = 1.42
+        card_w = float(np.clip(scale * plane_width * 0.28 * reward_card_scale, 62.0 * reward_card_scale, 122.0 * reward_card_scale))
+        card_h = card_w * 1.34
+        gap = card_w * 0.14
+        selected_action = selection.get("action") if selection.get("active") else None
+
+        x_axis = self._projected_axis(H, enemy_pos, (10.0, 0.0), fallback=(1.0, 0.0))
+        y_axis = self._projected_axis(H, enemy_pos, (0.0, 10.0), fallback=(0.0, 1.0))
+        screen_up = np.asarray([0.0, -1.0], dtype=np.float32)
+
+        tilt_radians = np.deg2rad(60.0)
+        ground_depth = np.cos(tilt_radians) * card_h * 0.54
+        screen_lift = np.sin(tilt_radians) * card_h * 0.54
+        top_vector = -y_axis * ground_depth + screen_up * screen_lift
+
+        row_width = card_w * 3.0 + gap * 2.0
+        row_origin = center - x_axis * (row_width * 0.5 - card_w * 0.5)
+        slots = {}
+        for index, action in enumerate(self.ACTIONS):
+            scale_selected = 1.12 if action["action"] == selected_action else 1.0
+            width = card_w * scale_selected
+            bottom_center = row_origin + x_axis * index * (card_w + gap) + y_axis * (card_h * 0.10)
+            top_center = bottom_center + top_vector * scale_selected
+            half_width = x_axis * (width * 0.5)
+            dst = np.asarray(
+                [
+                    top_center - half_width,
+                    top_center + half_width,
+                    bottom_center + half_width,
+                    bottom_center - half_width,
+                ],
+                dtype=np.float32,
+            )
+            slots[action["action"]] = {
+                "center": tuple(bottom_center.tolist()),
+                "dst": dst,
+                "color": action["color"],
+            }
+        return slots
+
+    def _projected_axis(self, H, center, delta, fallback):
+        base = HomographyEstimator.transform_point(center, H)
+        shifted = HomographyEstimator.transform_point((center[0] + delta[0], center[1] + delta[1]), H)
+        if base is None or shifted is None:
+            axis = np.asarray(fallback, dtype=np.float32)
+        else:
+            axis = np.asarray(shifted, dtype=np.float32) - np.asarray(base, dtype=np.float32)
+        norm = float(np.linalg.norm(axis))
+        if norm < 1e-5:
+            axis = np.asarray(fallback, dtype=np.float32)
+            norm = float(np.linalg.norm(axis))
+        return axis / max(norm, 1e-5)
+
+    def _draw_reward_cards(self, frame, H, slots, reward_selection):
+        choices = reward_selection.get("choices") or []
+        for index, choice in enumerate(choices[:3]):
+            slot_action = choice.get("slot_action") or ("Strike", "Guard", "Shot")[min(index, 2)]
+            slot = slots.get(slot_action)
+            if slot is None:
+                continue
+            self._draw_reward_card(frame, H, slot, choice, reward_selection)
+
+    def _draw_reward_card(self, frame, H, slot, choice, reward_selection):
+        image = self._reward_card_image(choice)
+        if "dst" in slot:
+            dst = np.asarray(slot["dst"], dtype=np.float32)
+        else:
+            dst = self._project_points(slot["rect"], H)
+        if dst is None:
+            return
+
+        self._warp_rgba(frame, image, dst)
+        selected = (
+            reward_selection.get("active")
+            and reward_selection.get("selected_index") == choice.get("slot_index")
+        )
+        color = self._reward_color(choice.get("category"))
+        border = (255, 245, 120) if selected else (160, 150, 120)
+        thickness = 3 if selected else 1
+        cv2.polylines(frame, [dst.astype(np.int32)], True, border, thickness, cv2.LINE_AA)
+        if selected:
+            progress = float(reward_selection.get("hold_progress", reward_selection.get("progress", 0.0)) or 0.0)
+            self._draw_progress_around_card(frame, dst, progress)
+
+    def _reward_card_image(self, choice):
+        category = str(choice.get("category", "reward"))
+        title = str(choice.get("title", "Reward"))
+        description = str(choice.get("description", "Details pending"))
+        key = ("reward", choice.get("id"), title, category, description)
+        cached = self.card_cache.get(key)
+        if cached is not None:
+            return cached
+
+        width, height = 180, 244
+        color = self._reward_color(category)
+        image = np.zeros((height, width, 4), dtype=np.uint8)
+        image[:, :, 3] = 224
+        image[:, :, :3] = (24, 22, 32)
+        cv2.rectangle(image, (7, 7), (width - 8, height - 8), color, 3, cv2.LINE_AA)
+        cv2.rectangle(image, (18, 22), (width - 19, 96), tuple(max(0, int(c * 0.48)) for c in color), -1)
+
+        if Image is not None:
+            rgba = image[:, :, [2, 1, 0, 3]].copy()
+            canvas = Image.fromarray(rgba, "RGBA")
+            draw = ImageDraw.Draw(canvas)
+            title_font = self._font(19, bold=True)
+            small_font = self._font(12, bold=False)
+            accent = (color[2], color[1], color[0], 255)
+            draw.text((18, 107), category.upper()[:18], font=small_font, fill=accent)
+            for line_index, line in enumerate(self._wrap_text(title, 12, 2)):
+                draw.text((18, 130 + line_index * 22), line, font=title_font, fill=(248, 242, 220, 255))
+            for line_index, line in enumerate(self._wrap_text(description, 18, 3)):
+                draw.text((18, 183 + line_index * 15), line, font=small_font, fill=(214, 207, 188, 255))
+            image = np.asarray(canvas, dtype=np.uint8)[:, :, [2, 1, 0, 3]].copy()
+        else:
+            cv2.putText(image, category.upper()[:12], (18, 118), cv2.FONT_HERSHEY_SIMPLEX, 0.38, color + (255,), 1, cv2.LINE_AA)
+            cv2.putText(image, title[:10].upper(), (18, 150), cv2.FONT_HERSHEY_SIMPLEX, 0.58, (245, 240, 225, 255), 2, cv2.LINE_AA)
+            for line_index, line in enumerate(self._wrap_text(description, 18, 3)):
+                cv2.putText(image, line, (18, 188 + line_index * 17), cv2.FONT_HERSHEY_SIMPLEX, 0.36, (214, 207, 188, 255), 1, cv2.LINE_AA)
+
+        self.card_cache[key] = image
+        return image
+
+    @staticmethod
+    def _reward_color(category):
+        colors = {
+            "stat": (70, 150, 255),
+            "heal": (80, 220, 120),
+            "card_upgrade": (255, 160, 80),
+            "augment": (255, 120, 230),
+        }
+        return colors.get(str(category), (190, 170, 110))
+
+    @staticmethod
+    def _wrap_text(text, max_chars, max_lines):
+        words = str(text).split()
+        if not words:
+            return [""]
+        lines = []
+        current = ""
+        for word in words:
+            candidate = word if not current else f"{current} {word}"
+            if len(candidate) <= max_chars:
+                current = candidate
+            else:
+                lines.append(current[:max_chars])
+                current = word
+                if len(lines) >= max_lines:
+                    break
+        if current and len(lines) < max_lines:
+            lines.append(current[:max_chars])
+        return lines[:max_lines]
+
     def _draw_board_card(self, frame, H, slot, action, selection):
         image = self._load_card(action["path"], action["label"], action["color"])
         dst = self._project_points(slot["rect"], H)
@@ -394,6 +657,33 @@ class ActionCardRenderer:
         end = left + (right - left) * progress
         cv2.line(frame, tuple(left.astype(int)), tuple(right.astype(int)), (45, 45, 55), 5, cv2.LINE_AA)
         cv2.line(frame, tuple(left.astype(int)), tuple(end.astype(int)), color, 5, cv2.LINE_AA)
+
+    def _draw_progress_around_card(self, frame, quad, progress):
+        progress = max(0.0, min(1.0, float(progress)))
+        if progress <= 0.0:
+            return
+        points = np.asarray(quad, dtype=np.float32)
+        if points.shape != (4, 2):
+            return
+
+        glow = frame.copy()
+        cv2.polylines(glow, [points.astype(np.int32)], True, (255, 255, 255), 9, cv2.LINE_AA)
+        cv2.addWeighted(glow, 0.24, frame, 0.76, 0, frame)
+
+        segments = list(zip(points, np.roll(points, -1, axis=0)))
+        lengths = [float(np.linalg.norm(end - start)) for start, end in segments]
+        remaining = sum(lengths) * progress
+        for (start, end), length in zip(segments, lengths):
+            if remaining <= 0.0:
+                break
+            if remaining >= length:
+                cv2.line(frame, tuple(start.astype(int)), tuple(end.astype(int)), (255, 255, 255), 5, cv2.LINE_AA)
+                remaining -= length
+                continue
+            ratio = remaining / max(length, 1e-6)
+            partial_end = start + (end - start) * ratio
+            cv2.line(frame, tuple(start.astype(int)), tuple(partial_end.astype(int)), (255, 255, 255), 5, cv2.LINE_AA)
+            break
 
     def _draw_round_reveal(self, frame, H, game_state, enemy_pos):
         reveal = game_state.get("round_reveal", {})

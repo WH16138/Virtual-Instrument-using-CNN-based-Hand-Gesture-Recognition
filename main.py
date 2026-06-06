@@ -23,10 +23,11 @@ PLANE_PREVIEW_INTERVAL_FRAMES = 4
 HAND_DETECTION_MAX_DIM = 640
 GESTURE_CONFIDENCE_THRESHOLD = 0.6
 SETUP_GESTURE = "OK_Sign"
-SETUP_GESTURE_HOLD_FRAMES = 12
+SETUP_GESTURE_HOLD_SECONDS = 2.0
 WINDOW_NAME = "VisionQuest"
-DISPLAY_WIDTH = 1120
-DISPLAY_HEIGHT = 760
+DISPLAY_WIDTH = 1280
+DISPLAY_HEIGHT = 860
+MOBILE_PREVIEW_WIDTH = 960
 
 
 UNKNOWN_GESTURE = {
@@ -69,24 +70,119 @@ def get_display_size(window_name):
     return width, height
 
 
-def prepare_display_frame(frame, target_width=None, target_height=None):
+def display_frame_layout(frame_shape, target_width=None, target_height=None):
     target_width = DISPLAY_WIDTH if target_width is None else int(target_width)
     target_height = DISPLAY_HEIGHT if target_height is None else int(target_height)
-    frame_height, frame_width = frame.shape[:2]
+    frame_height, frame_width = frame_shape[:2]
     if frame_width <= 0 or frame_height <= 0 or target_width <= 0 or target_height <= 0:
-        return frame
+        return 1.0, 0, 0, frame_width, frame_height, target_width, target_height
 
     scale = min(target_width / float(frame_width), target_height / float(frame_height))
     resized_width = int(round(frame_width * scale))
     resized_height = int(round(frame_height * scale))
-    resized = cv2.resize(frame, (resized_width, resized_height), interpolation=cv2.INTER_LINEAR)
-
-    canvas = np.zeros((target_height, target_width, 3), dtype=np.uint8)
     x1 = max((target_width - resized_width) // 2, 0)
     y1 = max((target_height - resized_height) // 2, 0)
+    return scale, x1, y1, resized_width, resized_height, target_width, target_height
+
+
+def prepare_display_frame(frame, target_width=None, target_height=None):
+    scale, x1, y1, resized_width, resized_height, target_width, target_height = display_frame_layout(
+        frame.shape,
+        target_width,
+        target_height,
+    )
+    frame_height, frame_width = frame.shape[:2]
+    if frame_width <= 0 or frame_height <= 0 or target_width <= 0 or target_height <= 0:
+        return frame
+
+    resized = cv2.resize(frame, (resized_width, resized_height), interpolation=cv2.INTER_LINEAR)
+    canvas = np.zeros((target_height, target_width, 3), dtype=np.uint8)
     canvas[y1 : y1 + resized_height, x1 : x1 + resized_width] = resized
     return canvas
 
+
+def homography_for_display(H, frame_shape, target_width, target_height):
+    if H is None:
+        return None
+    scale, x1, y1, _, _, _, _ = display_frame_layout(frame_shape, target_width, target_height)
+    transform = np.asarray(
+        [
+            [scale, 0.0, float(x1)],
+            [0.0, scale, float(y1)],
+            [0.0, 0.0, 1.0],
+        ],
+        dtype=np.float64,
+    )
+    return transform @ H
+
+
+def scaled_frame_and_homography(frame, H, target_width):
+    frame_height, frame_width = frame.shape[:2]
+    target_width = int(target_width)
+    if frame_width <= 0 or frame_height <= 0 or target_width <= 0:
+        return frame, H
+
+    scale = target_width / float(frame_width)
+    if abs(scale - 1.0) < 1e-3:
+        return frame.copy(), None if H is None else H.copy()
+
+    target_height = max(1, int(round(frame_height * scale)))
+    interpolation = cv2.INTER_CUBIC if scale > 1.0 else cv2.INTER_AREA
+    scaled = cv2.resize(frame, (target_width, target_height), interpolation=interpolation)
+    if H is None:
+        return scaled, None
+
+    transform = np.asarray(
+        [
+            [scale, 0.0, 0.0],
+            [0.0, scale, 0.0],
+            [0.0, 0.0, 1.0],
+        ],
+        dtype=np.float64,
+    )
+    return scaled, transform @ H
+
+
+def draw_sharp_ui_overlay(
+    target_frame,
+    target_H,
+    game_started,
+    game_state,
+    events,
+    gesture_info,
+    action_cards,
+    floating_text,
+    ar_renderer,
+    game_manager,
+    setup_hold_progress,
+    plane_registered,
+    debug_mode,
+    fps,
+    hand_detection,
+):
+    if target_H is not None and game_started:
+        target_frame = action_cards.draw(
+            target_frame,
+            target_H,
+            (ar_renderer.plane_width, ar_renderer.plane_height),
+            game_state,
+            events,
+            game_manager.enemy_pos,
+            gesture_info=gesture_info,
+        )
+        target_frame = floating_text.draw(target_frame, target_H, HomographyEstimator.transform_point)
+
+    target_frame = HUD.draw_game_layer(
+        target_frame,
+        game_state,
+        gesture_info,
+        plane_registered,
+        game_started,
+        setup_hold_progress,
+    )
+    if debug_mode or not plane_registered:
+        draw_runtime_diagnostics(target_frame, fps, hand_detection, plane_registered, game_started)
+    return target_frame
 
 
 def resize_for_vision(frame, max_dim):
@@ -480,7 +576,7 @@ def main():
     game_started = False
     plane_registered = False
     debug_mode = False
-    setup_gesture_counter = 0
+    setup_gesture_started_at = None
     viewport_prepared = False
     last_frame_shape = None
 
@@ -553,11 +649,17 @@ def main():
             if not game_started:
                 setup_ok = is_setup_ok_gesture(gesture_info)
                 can_complete_setup = current_tracking_result.get("success") and H is not None
-                setup_gesture_counter = setup_gesture_counter + 1 if setup_ok and can_complete_setup else 0
+                if setup_ok and can_complete_setup:
+                    if setup_gesture_started_at is None:
+                        setup_gesture_started_at = now
+                    setup_hold_elapsed = now - setup_gesture_started_at
+                else:
+                    setup_gesture_started_at = None
+                    setup_hold_elapsed = 0.0
 
-                if setup_gesture_counter >= SETUP_GESTURE_HOLD_FRAMES:
+                if setup_hold_elapsed >= SETUP_GESTURE_HOLD_SECONDS:
                     if not plane_registered and not plane_tracker.register_tracking_result(current_tracking_result):
-                        setup_gesture_counter = 0
+                        setup_gesture_started_at = None
                         print("Gate board registration failed. Show the full square gate marker in the camera view.")
                     else:
                         plane_registered = True
@@ -565,10 +667,9 @@ def main():
                         game_started = True
                         floating_text.reset()
                         action_cards.reset()
-                        setup_gesture_counter = 0
+                        setup_gesture_started_at = None
                         freshness_grace_until = time.monotonic() + FRAME_STALE_GRACE_SECONDS
                         print("Gate board registered and game started by OK sign.")
-
             if game_started:
                 action_performed = game_manager.process_gesture(gesture_info)
                 if action_performed:
@@ -588,7 +689,9 @@ def main():
             )
             floating_text.add_from_events(events, game_manager.player_pos, game_manager.enemy_pos, player_feedback_pos)
             tracking_needs_attention = should_show_tracking_attention(current_tracking_result)
-            setup_hold_progress = setup_gesture_counter / float(SETUP_GESTURE_HOLD_FRAMES)
+            setup_hold_progress = 0.0
+            if setup_gesture_started_at is not None and not game_started:
+                setup_hold_progress = min(1.0, (now - setup_gesture_started_at) / SETUP_GESTURE_HOLD_SECONDS)
 
             if H is not None and game_started:
                 frame = ar_renderer.render_battlefield(
@@ -599,16 +702,6 @@ def main():
                     game_state=game_state,
                     show_floor_mesh=debug_mode or tracking_needs_attention,
                 )
-                frame = action_cards.draw(
-                    frame,
-                    H,
-                    (ar_renderer.plane_width, ar_renderer.plane_height),
-                    game_state,
-                    events,
-                    game_manager.enemy_pos,
-                    gesture_info=gesture_info,
-                )
-                frame = floating_text.draw(frame, H, HomographyEstimator.transform_point)
 
             show_tracking_overlay = (
                 debug_mode
@@ -621,13 +714,47 @@ def main():
             if debug_mode or not game_started:
                 frame = hand_tracker.draw_hands(frame, hand_detection)
 
-            frame = HUD.draw_game_layer(frame, game_state, gesture_info, plane_registered, game_started, setup_hold_progress)
-            if debug_mode or not plane_registered:
-                draw_runtime_diagnostics(frame, fps, hand_detection, plane_registered, game_started)
+            preview_frame, preview_H = scaled_frame_and_homography(frame, H, MOBILE_PREVIEW_WIDTH)
+            preview_frame = draw_sharp_ui_overlay(
+                preview_frame,
+                preview_H,
+                game_started,
+                game_state,
+                events,
+                gesture_info,
+                action_cards,
+                floating_text,
+                ar_renderer,
+                game_manager,
+                setup_hold_progress,
+                plane_registered,
+                debug_mode,
+                fps,
+                hand_detection,
+            )
+            websocket_server.publish_rendered_frame(preview_frame)
 
-            websocket_server.publish_rendered_frame(frame)
             display_width, display_height = get_display_size(WINDOW_NAME)
-            cv2.imshow(WINDOW_NAME, prepare_display_frame(frame, display_width, display_height))
+            display_frame = prepare_display_frame(frame, display_width, display_height)
+            display_H = homography_for_display(H, frame.shape, display_width, display_height)
+            display_frame = draw_sharp_ui_overlay(
+                display_frame,
+                display_H,
+                game_started,
+                game_state,
+                events,
+                gesture_info,
+                action_cards,
+                floating_text,
+                ar_renderer,
+                game_manager,
+                setup_hold_progress,
+                plane_registered,
+                debug_mode,
+                fps,
+                hand_detection,
+            )
+            cv2.imshow(WINDOW_NAME, display_frame)
             key = cv2.waitKey(1) & 0xFF
 
             if key == ord("q"):
@@ -645,7 +772,7 @@ def main():
                 game_started = False
                 plane_registered = False
                 debug_mode = False
-                setup_gesture_counter = 0
+                setup_gesture_started_at = None
                 viewport_prepared = False
                 last_frame_shape = None
                 freshness_grace_until = 0.0

@@ -5,6 +5,7 @@ import time
 from ar.homography import HomographyEstimator
 from ar.model_loader import ModelLoader
 from ar.pyrender_renderer import PyrenderModelRenderer
+from game.battle_system import BattleState
 
 
 class ARRenderer:
@@ -70,14 +71,17 @@ class ARRenderer:
         enemy_model_size = board_side * self.enemy_model_scale
         enemy_fallback_size = board_side * self.enemy_fallback_scale
         enemy_float_offset = board_side * 0.08 + np.sin(time.monotonic() * 1.8) * board_side * 0.035
+        enemy_visible = self._should_render_enemy(game_state)
+        if not enemy_visible:
+            self.pbr_renderer.last_overlay = None
 
         ground_drawn = self._draw_ground_texture(frame, H, ground_model_path, ground_pos, alpha=0.96)
         self._render_frame_index += 1
         should_render_enemy = self._render_frame_index % max(1, self.enemy_render_interval) == 0
         enemy_drawn = False
-        if not should_render_enemy:
+        if enemy_visible and not should_render_enemy:
             enemy_drawn = self.pbr_renderer.blend_last_overlay(frame)
-        if not enemy_drawn:
+        if enemy_visible and not enemy_drawn:
             enemy_drawn = self.pbr_renderer.render_models(
                 frame,
                 pose,
@@ -97,7 +101,7 @@ class ARRenderer:
         if not ground_drawn:
             self._draw_ground_platform(frame, H, ground_pos, enemy_color)
 
-        if not enemy_drawn:
+        if enemy_visible and not enemy_drawn:
             enemy_drawn = self._draw_model_unit(
                 frame,
                 pos=enemy_pos,
@@ -108,9 +112,17 @@ class ARRenderer:
                 pose=pose,
                 height_offset=enemy_float_offset,
             )
-        if not enemy_drawn:
+        if enemy_visible and not enemy_drawn:
             self._draw_cube(frame, H, enemy_pos, "E", enemy_color, enemy_fallback_size * 0.90, pose=pose, height_offset=enemy_float_offset)
         return frame
+
+    def _should_render_enemy(self, game_state):
+        if not game_state:
+            return True
+        if game_state.get("battle_state") in (BattleState.WAVE_CLEAR, BattleState.REWARD_SELECT):
+            return False
+        enemy = game_state.get("enemy", {}) or {}
+        return int(enemy.get("hp", 1) or 0) > 0
 
     def _draw_floor(self, frame, H):
         corners = self._project_board_points(

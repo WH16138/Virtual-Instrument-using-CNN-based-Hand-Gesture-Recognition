@@ -1,6 +1,8 @@
 from enum import Enum
 import random
 
+from game.augment_system import AugmentSystem
+
 
 class BattleState(Enum):
     """Battle state."""
@@ -11,24 +13,26 @@ class BattleState(Enum):
     ROUND_REVEAL = 3
     ENEMY_TURN = 4
     WAVE_CLEAR = 5
-    DEFEAT = 6
-    VICTORY = 7
+    REWARD_SELECT = 6
+    DEFEAT = 7
+    VICTORY = 8
 
 
 class BattleSystem:
     """Simultaneous card battle system."""
 
-    PLAYER_HEAL_RATIO = 0.08
-    PLAYER_HEAL_MIN = 6
+    PLAYER_HEAL_RATIO = 0.10
+    PLAYER_HEAL_MIN = 5
     ENEMY_HEAL_RATIO = 0.08
     ENEMY_HEAL_MIN = 4
     SHOT_CRITICAL_MULTIPLIER = 2
     ENEMY_SKILL_MULTIPLIER = 2
 
-    def __init__(self, player, enemy, skill_manager):
+    def __init__(self, player, enemy, skill_manager, augment_system=None):
         self.player = player
         self.enemy = enemy
         self.skill_manager = skill_manager
+        self.augment_system = augment_system or AugmentSystem()
         self.state = BattleState.WAITING
         self.last_action = None
         self.last_damage = 0
@@ -132,11 +136,35 @@ class BattleSystem:
         def block(source, kind, target):
             add_event(source, kind, "BLOCK", target, result="block")
 
-        strike_damage = 12
-        shot_damage = 22 * self.SHOT_CRITICAL_MULTIPLIER
-        player_heal = max(self.PLAYER_HEAL_MIN, int(round(self.player.max_hp * self.PLAYER_HEAL_RATIO)))
+        attack_power = max(0, int(getattr(self.player, "attack_power", 15)))
+        strike_damage = max(0, int(round((attack_power + self.player.strike_bonus) * self.player.damage_multiplier)))
+        shot_damage = max(0, int(round((attack_power + self.player.shot_bonus) * self.SHOT_CRITICAL_MULTIPLIER * self.player.damage_multiplier)))
+        missing_player_hp = max(0, self.player.max_hp - self.player.hp)
+        player_heal_ratio = self.PLAYER_HEAL_RATIO + self.player.guard_heal_ratio_bonus
+        base_player_heal = max(self.PLAYER_HEAL_MIN, int(round(missing_player_hp * player_heal_ratio)))
+        player_heal = max(0, int(round((base_player_heal + self.player.guard_bonus) * self.player.heal_multiplier)))
         enemy_heal = max(self.ENEMY_HEAL_MIN, int(round(self.enemy.max_hp * self.ENEMY_HEAL_RATIO)))
         enemy_skill_damage = int(self.enemy.base_damage * self.ENEMY_SKILL_MULTIPLIER)
+        context = {
+            "player": self.player,
+            "enemy": self.enemy,
+            "player_action": player_action,
+            "enemy_action": enemy_action,
+            "attack_power": attack_power,
+            "strike_damage": strike_damage,
+            "shot_damage": shot_damage,
+            "player_heal": player_heal,
+            "enemy_heal": enemy_heal,
+            "enemy_skill_damage": enemy_skill_damage,
+            "events": events,
+            "add_event": add_event,
+            "damage_enemy": damage_enemy,
+            "damage_player": damage_player,
+            "heal_player": heal_player,
+            "heal_enemy": heal_enemy,
+        }
+        player_heal = self.augment_system.modify_player_heal(context, player_heal)
+        context["player_heal"] = player_heal
 
         if player_action == "Strike":
             if enemy_action == "Defend":
@@ -156,6 +184,7 @@ class BattleSystem:
                 chance = 0.25
             else:
                 chance = 0.50
+            chance = self.augment_system.modify_player_shot_chance(context, chance)
             if random.random() <= chance:
                 damage_enemy(shot_damage, "Shot", label="CRIT", critical=True)
             else:
@@ -184,6 +213,9 @@ class BattleSystem:
                 damage_player(enemy_skill_damage, "Skill", label="CRIT", critical=True)
             else:
                 miss("enemy", "Skill", "player")
+
+        context["pre_augment_event_count"] = len(events)
+        self.augment_system.after_round_resolve(context)
 
         if not self.player.is_alive:
             self.state = BattleState.DEFEAT
@@ -248,4 +280,5 @@ class BattleSystem:
             BattleState.ROUND_REVEAL,
             BattleState.ENEMY_TURN,
             BattleState.WAVE_CLEAR,
+            BattleState.REWARD_SELECT,
         )

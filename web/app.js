@@ -10,12 +10,12 @@ const arViewButton = document.getElementById('ar-view');
 const cameraViewButton = document.getElementById('camera-view');
 
 const DEFAULT_WS_PORT = 8765;
-const JPEG_QUALITY = 0.7;
+const JPEG_QUALITY = 0.76;
 const SEND_INTERVAL_MS = 34;
 const RECONNECT_BASE_DELAY_MS = 1000;
 const RECONNECT_MAX_DELAY_MS = 5000;
-const MAX_BUFFERED_BYTES = 200000;
-const MAX_FRAME_WIDTH = 640;
+const MAX_BUFFERED_BYTES = 450000;
+const MAX_FRAME_WIDTH = 960;
 
 const canvas = document.createElement('canvas');
 const ctx = canvas.getContext('2d');
@@ -121,6 +121,8 @@ async function initCamera() {
         const stream = await navigator.mediaDevices.getUserMedia({
             video: {
                 facingMode: 'environment',
+                width: { ideal: 1280 },
+                height: { ideal: 720 },
                 frameRate: { ideal: 30, max: 30 }
             },
             audio: false
@@ -185,7 +187,7 @@ window.addEventListener('beforeunload', () => {
     }
 });
 
-qualityLabel.textContent = `JPEG ${JPEG_QUALITY}`;
+qualityLabel.textContent = `JPEG ${JPEG_QUALITY} | max ${MAX_FRAME_WIDTH}px`;
 updateConnection(false);
 updateFrames();
 setViewMode(false);
