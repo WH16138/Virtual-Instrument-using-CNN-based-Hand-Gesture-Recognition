@@ -10,7 +10,7 @@ smartphone camera
   -> OpenCV desktop loop
   -> MediaPipe hand landmarks
   -> landmark-vector gesture classifier
-  -> A4 board marker tracking
+  -> 150 mm gate-board marker tracking
   -> homography / solvePnP pose
   -> AR battlefield compositing
   -> turn-based battle interaction
@@ -31,9 +31,9 @@ Implemented:
   - `V_Sign`: ranged attack
   - `Gun_Sign`: ranged attack, trained separately from `V_Sign`
   - `OK_Sign`: board registration and game start during setup
-- A4 board registration using dark corner marks drawn near the paper corners.
-- Homography confidence, reprojection error checks, temporal smoothing, and missing marker prediction.
-- Partial marker occlusion handling using current homography projection from A4 world coordinates.
+- Default 150 x 150 mm hand-drawn gate-board registration using an outer frame, central ring, and short direction stem.
+- Perspective-normalized gate marker validation, homography confidence, reprojection checks, and temporal smoothing.
+- Registered-board tracking using multi-feature optical flow, forward/backward validation, RANSAC homography, and periodic gate re-detection.
 - Infinite wave battle system with enemy types and difficulty scaling.
 - Textured model rendering through `trimesh` + `pyrender` with OpenCV alpha blending.
 - GLB/GLTF model support for enemy and ground models.
@@ -45,7 +45,7 @@ Recently changed:
 - The player model is no longer rendered on the board.
 - The AR board now focuses on terrain/ground model plus the current enemy model.
 - Old decorative corner pillars were removed.
-- During gameplay, A4 boxes, homography text, marker debug graphics, FPS diagnostics, and other debug overlays are hidden by default.
+- During gameplay, board outlines, homography text, marker debug graphics, FPS diagnostics, and other debug overlays are hidden by default.
 - Press `D` to show or hide debug overlays.
 - Enemy models float slowly up and down to avoid a static, frozen look.
 
@@ -98,7 +98,7 @@ Startup flow:
 3. Scan the QR code shown in the desktop OpenCV waiting screen.
 4. Allow camera access on the phone.
 5. Confirm the phone page shows `WebSocket: connected` and increasing frame count.
-6. Aim the phone at the A4 board.
+6. Aim the phone at the complete square gate marker.
 7. Hold `OK_Sign` while the detected board highlight is visible.
 8. Keep holding until the progress outline completes; the board registers and the game starts together.
 
@@ -110,18 +110,19 @@ R      reset game
 D      toggle debug overlays
 ```
 
-## A4 Board Setup
+## Gate Board Setup
 
-Use a normal white A4 sheet. Draw dark marks near the four inside corners.
+Use a normal white A4 sheet, but draw one large gate marker at the center. The marker itself defines the playable board.
 
-Recommended:
+Recommended marker:
 
-- Use a black pen or marker.
-- Draw an L-shaped mark or a bold dot near each inside corner.
-- Keep each mark roughly 1-2 cm inside the paper edge.
-- Keep the A4 sheet near the center of the camera view during initial registration.
+- Draw a bold hollow black square, about `15 cm x 15 cm`.
+- Draw a hollow central ring inside the square.
+- Draw a short dark stem downward from the ring so the tracker can infer orientation.
+- Keep the inside of the square mostly white.
+- The outer square corners are the AR board corners.
 
-The tracker uses the corner marks first. Plain white-paper boundary detection exists only as a fallback and is less reliable.
+The older A4 corner L-marker detector is kept only as a legacy comparison path in code. The default runtime detector is the single gate marker because it is easier to draw, more thematic, and provides stronger shape validation than four small hand-drawn corner marks.
 
 ## Board Tracking Design
 
@@ -130,24 +131,22 @@ The board tracker borrows practical ideas from fiducial marker systems while kee
 Runtime structure:
 
 ```text
-L/dark corner mark detection
-  -> 4 marker slots, or 3 observed + 1 predicted
-  -> homography calculation
-  -> reprojection error
-  -> confidence estimation
-  -> reject low-confidence H or hold previous H briefly
-  -> EMA homography smoothing
+gate-marker square contour detection
+  -> perspective-normalized patch
+  -> outer frame + central ring + stem validation
+  -> 150 mm square homography
+  -> optical-flow feature tracking after registration
+  -> periodic low-cost re-detection when confidence drops
   -> AR rendering
 ```
 
 Important details:
 
-- Marker slots correspond to A4 world coordinates, not arbitrary screen points.
-- If one marker is hidden, its screen position is predicted by projecting its known A4 world coordinate through the current/previous homography.
-- Missing marker debug X marks are now homography-projected predictions, not stale screen-space memories.
-- Hand occlusion masks are used to reject marker candidates overlapping the detected hand area.
-- Homography confidence uses visible corner count, detector score, temporal consistency, board sanity, and reprojection error.
-- Low-confidence results are rejected to prevent the AR plane from jumping.
+- The gate marker is the board, so its four square corners directly define the AR plane.
+- The hollow square is easy for thresholding/contours, while the central ring and stem reject ordinary rectangular noise.
+- The stem resolves board orientation, so enemy/ground placement stays consistent when the paper rotates.
+- Registered tracking uses internal feature points, forward/backward optical-flow checks, and RANSAC homography.
+- Low-confidence results are rejected or held briefly to prevent the AR plane from jumping.
 
 References behind the tracker design:
 

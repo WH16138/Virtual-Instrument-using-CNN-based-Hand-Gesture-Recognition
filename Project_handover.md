@@ -11,7 +11,7 @@ The game should remain simple enough that the CV pipeline is visible:
 1. phone camera streaming
 2. hand landmark detection
 3. gesture classification
-4. A4 board registration/tracking
+4. 150 mm gate-board registration/tracking
 5. homography and pose estimation
 6. AR model compositing
 7. gesture-driven turn-based combat
@@ -102,13 +102,13 @@ Files:
 
 Current design:
 
-- A4 sheet is the board.
-- Dark hand-drawn corner marks are the primary detection target.
-- White A4 boundary detection is only a fallback.
+- A single 150 mm square gate marker is the board.
+- The default detector validates the hollow outer square, central ring, and short direction stem.
+- The old A4 corner-mark detector remains only as legacy fallback/comparison code.
 - Tracker supports partial occlusion:
-  - 4 visible markers: direct marker homography
-  - 3 visible markers: missing marker predicted from homography/world coordinates
-  - tracking loss: last accepted homography held briefly
+  - initial detection: direct gate-square homography
+  - registered tracking: optical-flow features + RANSAC homography
+  - tracking loss: last accepted homography held briefly, then periodic re-detection
 - Homography quality is checked with confidence and reprojection error.
 - Accepted homographies are smoothed with EMA.
 - Hand occlusion mask is used to reject candidates overlapping the detected hand.
@@ -128,8 +128,8 @@ Files:
 
 Current design:
 
-- The A4 floor/grid uses the board homography.
-- 3D textured assets use `solvePnP` pose derived from the A4 board.
+- The gate-board floor/grid uses the board homography.
+- 3D textured assets use `solvePnP` pose derived from the 150 mm gate board.
 - `trimesh` loads `.glb`, `.gltf`, and `.obj`.
 - `pyrender` renders RGBA offscreen.
 - OpenCV alpha blends the rendered model onto the camera frame.

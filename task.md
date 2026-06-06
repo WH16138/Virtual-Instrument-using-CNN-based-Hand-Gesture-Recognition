@@ -6,18 +6,18 @@ Last updated: 2026-06-05
 
 Improve demo completeness while keeping the CV pipeline stable:
 
-- reliable A4 board registration/tracking
+- reliable 150 mm gate-board registration/tracking
 - clean gameplay view
 - textured enemy/ground AR rendering
 - understandable gesture-driven battle flow
 
 ## Completed Recently
 
-- Replaced plain A4-only tracking with hand-drawn dark corner mark tracking.
+- Replaced corner-mark primary tracking with the single 150 mm gate marker.
 - Added homography confidence, reprojection error checks, and EMA smoothing.
-- Added partial occlusion handling.
-- Changed missing marker display to use homography-projected world marker positions.
-- Added hand occlusion masks to reject marker candidates under the detected hand.
+- Added registered-board optical-flow tracking with periodic gate re-detection.
+- Kept homography-projected missing marker display for the legacy corner-mark path.
+- Kept hand occlusion masks for legacy corner-mark candidates.
 - Added debug overlay toggle with `D`.
 - Hidden marker/homography/FPS debug text during gameplay by default.
 - Removed decorative board corner pillars.
@@ -42,7 +42,7 @@ python main.py
 Check:
 
 - phone page connects and sends frames
-- A4 corner marks are detected
+- square gate marker is detected
 - `SPACE` registers the board without returning to QR setup
 - `OK_Sign` or second `SPACE` starts game
 - debug overlays are hidden after game start

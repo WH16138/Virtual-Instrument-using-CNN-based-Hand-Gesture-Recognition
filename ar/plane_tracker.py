@@ -7,13 +7,18 @@ from ar.homography import HomographyEstimator
 
 
 class PlaneTracker:
-    """Detect a centered white A4 sheet and use it as the game board."""
+    """Detect and track the active planar game-board marker."""
 
     A4_WIDTH = 210
     A4_HEIGHT = 297
+    DOOR_BOARD_SIZE = 150
     MARK_INSET = 15
 
-    def __init__(self):
+    def __init__(self, detector_mode="door_marker"):
+        if detector_mode not in ("door_marker", "corner_marks"):
+            raise ValueError("detector_mode must be 'door_marker' or 'corner_marks'")
+        self.detector_mode = detector_mode
+        self.active_detector_mode = None
         self.is_registered = False
         self.last_corners = None
         self.last_homography = None
@@ -34,7 +39,18 @@ class PlaneTracker:
         self.marker_lock_radius = 180.0
         self.marker_roi_radius = 108
         self.frame_index = 0
-        self.current_plane_size = (self.A4_WIDTH, self.A4_HEIGHT)
+        self.last_door_image_points = None
+        self.last_door_world_points = None
+        self.door_detection_max_dim = 720
+        self.door_canonical_size = 320
+        self.door_redetection_interval = 8
+        self.door_stable_redetection_interval = 18
+        self.door_unstable_redetection_interval = 5
+        self.current_plane_size = (
+            (self.DOOR_BOARD_SIZE, self.DOOR_BOARD_SIZE)
+            if detector_mode == "door_marker"
+            else (self.A4_WIDTH, self.A4_HEIGHT)
+        )
         self.hand_occlusion_mask = None
         self.debug_marker_candidates = []
         self.debug_marker_display_cache = []
@@ -49,11 +65,11 @@ class PlaneTracker:
     def register_plane(self, frame):
         result = self.track_plane(frame)
         if not result["success"]:
-            print("A4 board registration failed. Place a white A4 sheet near the center of the camera view.")
+            print("Board registration failed. Show the complete gate marker in the camera view.")
             return False
 
         self.register_tracking_result(result)
-        print("A4 board registered.")
+        print("Game board registered.")
         return True
 
     def register_tracking_result(self, result):
@@ -70,6 +86,11 @@ class PlaneTracker:
             self.last_marker_centers = result["marker_centers"]
         if result.get("marker_observed") is not None:
             self.last_marker_observed = result["marker_observed"]
+        if result.get("door_image_points") is not None:
+            self.last_door_image_points = np.asarray(result["door_image_points"], dtype=np.float32)
+        if result.get("door_world_points") is not None:
+            self.last_door_world_points = np.asarray(result["door_world_points"], dtype=np.float32)
+        self.active_detector_mode = result.get("detector_mode", self.detector_mode)
         return True
 
     def track_plane(self, frame, hand_landmarks=None, debug=False):
@@ -81,6 +102,12 @@ class PlaneTracker:
 
         if not self.is_registered:
             self.debug_marker_candidates = []
+            if self.detector_mode == "door_marker":
+                door_result = self._detect_door_marker(gray)
+                if door_result is not None:
+                    return self._accept_marker_result(door_result, gray, "door_marker")
+                return self._failure_result()
+
             marker_result = self._detect_corner_marks_global(
                 gray,
                 allow_partial=True,
@@ -92,21 +119,39 @@ class PlaneTracker:
                 return self._accept_marker_result(marker_result, gray, method)
             return self._failure_result()
 
-        marker_result = self._detect_corner_marks(gray)
-        if marker_result is not None:
-            return self._accept_marker_result(marker_result, gray, "corner_marks")
+        if (self.active_detector_mode or self.detector_mode) == "door_marker":
+            if self.frame_index % self._current_door_redetection_interval() == 0:
+                door_result = self._detect_door_marker(gray, search_near_last=True)
+                if door_result is not None:
+                    return self._accept_marker_result(door_result, gray, "door_redetect")
 
-        tracked = self._tracking_fallback(gray)
-        if tracked is not None:
-            return tracked
+            tracked = self._track_last_door_points(gray)
+            if tracked is not None:
+                return tracked
 
+            door_result = self._detect_door_marker(gray, search_near_last=self.missed_frames < 3)
+            if door_result is not None:
+                return self._accept_marker_result(door_result, gray, "door_redetect")
+        else:
+            marker_result = self._detect_corner_marks(gray)
+            if marker_result is not None:
+                return self._accept_marker_result(marker_result, gray, "corner_marks")
+
+            tracked = self._tracking_fallback(gray)
+            if tracked is not None:
+                return tracked
         self.missed_frames += 1
         if (
             self.last_corners is not None
             and self.last_homography is not None
             and self.missed_frames <= self.max_missed_frames
         ):
-            marker_centers = self._marker_points_from_homography(self.last_homography, self.current_plane_size)
+            active_mode = self.active_detector_mode or self.detector_mode
+            marker_centers = (
+                None
+                if active_mode == "door_marker"
+                else self._marker_points_from_homography(self.last_homography, self.current_plane_size)
+            )
             return {
                 "success": True,
                 "H": self.last_homography,
@@ -119,6 +164,7 @@ class PlaneTracker:
                 "track_score": 0.0,
                 "homography_confidence": max(0.0, self.last_homography_confidence * 0.45),
                 "marker_observed": self.last_marker_observed,
+                "detector_mode": self.active_detector_mode or self.detector_mode,
                 "plane_size": self.current_plane_size,
             }
         return self._failure_result()
@@ -136,6 +182,485 @@ class PlaneTracker:
             "marker_quad_score": self.last_marker_quad_score,
             "selected_marker_centers": self.last_selected_marker_centers,
         }
+
+    def _current_door_redetection_interval(self):
+        if self.missed_frames > 0 or self.last_homography_confidence < 0.62:
+            return self.door_unstable_redetection_interval
+        if self.last_homography_confidence >= 0.78:
+            return self.door_stable_redetection_interval
+        return self.door_redetection_interval
+
+    def _detect_door_marker(self, gray, search_near_last=False):
+        """Detect the single square gate marker used as the 150 mm board."""
+        self.debug_marker_candidates = []
+        self.last_candidate_count = 0
+        self.last_marker_quad_score = None
+        self.last_selected_marker_centers = None
+        self.last_reject_reason = None
+
+        source_height, source_width = gray.shape[:2]
+        roi_x = 0
+        roi_y = 0
+        roi_gray = gray
+        if search_near_last and self.last_corners is not None:
+            corners = np.asarray(self.last_corners, dtype=np.float32)
+            x_min = max(0, int(np.floor(np.min(corners[:, 0]) - 80)))
+            y_min = max(0, int(np.floor(np.min(corners[:, 1]) - 80)))
+            x_max = min(source_width, int(np.ceil(np.max(corners[:, 0]) + 80)))
+            y_max = min(source_height, int(np.ceil(np.max(corners[:, 1]) + 80)))
+            if x_max > x_min + 80 and y_max > y_min + 80:
+                roi_x, roi_y = x_min, y_min
+                roi_gray = gray[y_min:y_max, x_min:x_max]
+
+        scale = 1.0
+        work_gray = roi_gray
+        max_dim = max(work_gray.shape[:2])
+        if max_dim > self.door_detection_max_dim:
+            scale = self.door_detection_max_dim / float(max_dim)
+            work_gray = cv2.resize(
+                work_gray,
+                (int(round(work_gray.shape[1] * scale)), int(round(work_gray.shape[0] * scale))),
+                interpolation=cv2.INTER_AREA,
+            )
+
+        blurred = cv2.GaussianBlur(work_gray, (5, 5), 0)
+        _, dark = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY_INV | cv2.THRESH_OTSU)
+        dark = cv2.morphologyEx(dark, cv2.MORPH_CLOSE, np.ones((3, 3), dtype=np.uint8), iterations=1)
+        contours, _ = cv2.findContours(dark, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        contours = sorted(contours, key=cv2.contourArea, reverse=True)[:16]
+        self.last_candidate_count = len(contours)
+
+        best = None
+        for contour in contours:
+            ordered_work, contour_score = self._door_candidate_corners(contour, work_gray.shape)
+            if ordered_work is None:
+                continue
+
+            ordered = ordered_work / max(scale, 1e-6)
+            ordered[:, 0] += roi_x
+            ordered[:, 1] += roi_y
+            if not self._validate_door_corners(ordered, gray.shape):
+                continue
+
+            for rotation in range(4):
+                oriented = np.roll(ordered, -rotation, axis=0).astype(np.float32)
+                patch = self._warp_door_candidate(gray, oriented)
+                validation = self._validate_door_patch(patch)
+                if validation is None or validation.get("direction_index") != 2:
+                    continue
+
+                source = np.asarray(
+                    [
+                        [0.0, 0.0],
+                        [self.DOOR_BOARD_SIZE, 0.0],
+                        [self.DOOR_BOARD_SIZE, self.DOOR_BOARD_SIZE],
+                        [0.0, self.DOOR_BOARD_SIZE],
+                    ],
+                    dtype=np.float32,
+                )
+                H = HomographyEstimator.compute_homography(source, oriented)
+                H = self._normalize_homography(H)
+                corners = self._board_corners_from_homography(H, (self.DOOR_BOARD_SIZE, self.DOOR_BOARD_SIZE))
+                if not self._validate_door_corners(corners, gray.shape):
+                    continue
+
+                area_ratio = self._polygon_area(corners) / max(float(source_height * source_width), 1.0)
+                area_score = float(np.clip((area_ratio - 0.015) / 0.25, 0.0, 1.0))
+                confidence = float(np.clip(validation["score"] * 0.78 + contour_score * 0.12 + area_score * 0.10, 0.0, 1.0))
+                if confidence < 0.48:
+                    continue
+
+                image_points, world_points = self._door_tracking_features(gray, H, corners)
+                candidate = {
+                    "H": H,
+                    "corners": corners.astype(np.float32),
+                    "marker_centers": corners.astype(np.float32),
+                    "observed_marker_centers": corners.astype(np.float32),
+                    "marker_observed": None,
+                    "score": confidence,
+                    "homography_confidence": confidence,
+                    "reprojection_error": 0.0,
+                    "matched_points": 4,
+                    "plane_size": (self.DOOR_BOARD_SIZE, self.DOOR_BOARD_SIZE),
+                    "detector_mode": "door_marker",
+                    "selected_marker_centers": corners.astype(np.float32),
+                    "candidate_count": len(contours),
+                    "door_symbol_score": validation["symbol_score"],
+                    "door_direction_score": validation["direction_score"],
+                    "door_image_points": image_points,
+                    "door_world_points": world_points,
+                }
+                self.debug_marker_candidates.append({"point": np.mean(corners, axis=0), "accepted": True, "slot": "gate"})
+                if best is None or candidate["homography_confidence"] > best["homography_confidence"]:
+                    best = candidate
+
+        if best is None:
+            self.last_reject_reason = "gate_marker_not_detected"
+            return None
+
+        self.last_marker_quad_score = best["homography_confidence"]
+        self.last_selected_marker_centers = best["corners"].copy()
+        return best
+
+    def _door_candidate_corners(self, contour, image_shape):
+        area = float(cv2.contourArea(contour))
+        image_area = float(image_shape[0] * image_shape[1])
+        if area < max(900.0, image_area * 0.012) or area > image_area * 0.88:
+            return None, 0.0
+
+        perimeter = cv2.arcLength(contour, True)
+        if perimeter <= 1e-6:
+            return None, 0.0
+        approx = cv2.approxPolyDP(contour, perimeter * 0.028, True)
+        if len(approx) == 4:
+            corners = approx.reshape(4, 2).astype(np.float32)
+        else:
+            rect = cv2.minAreaRect(contour)
+            box = cv2.boxPoints(rect).astype(np.float32)
+            corners = box
+
+        ordered = self._order_quad_points(corners)
+        if ordered is None or not self._is_convex_quad(ordered):
+            return None, 0.0
+        edge_lengths = np.asarray(
+            [np.linalg.norm(ordered[(idx + 1) % 4] - ordered[idx]) for idx in range(4)],
+            dtype=np.float32,
+        )
+        if float(np.min(edge_lengths)) < 36.0:
+            return None, 0.0
+        edge_ratio = float(np.max(edge_lengths) / max(np.min(edge_lengths), 1.0))
+        if edge_ratio > 2.8:
+            return None, 0.0
+        rectangularity = area / max(cv2.contourArea(ordered.astype(np.float32)), 1.0)
+        score = float(np.clip((1.0 / edge_ratio) * 0.62 + np.clip(rectangularity, 0.0, 1.0) * 0.38, 0.0, 1.0))
+        return ordered, score
+
+    def _order_quad_points(self, points):
+        points = np.asarray(points, dtype=np.float32)
+        if points.shape != (4, 2):
+            return None
+        ordered = np.zeros((4, 2), dtype=np.float32)
+        sums = points.sum(axis=1)
+        diffs = np.diff(points, axis=1).reshape(-1)
+        ordered[0] = points[int(np.argmin(sums))]
+        ordered[2] = points[int(np.argmax(sums))]
+        ordered[1] = points[int(np.argmin(diffs))]
+        ordered[3] = points[int(np.argmax(diffs))]
+        if len({tuple(np.round(point, 2)) for point in ordered}) != 4:
+            center = np.mean(points, axis=0)
+            angles = np.arctan2(points[:, 1] - center[1], points[:, 0] - center[0])
+            ordered = points[np.argsort(angles)].astype(np.float32)
+            start = int(np.argmin(ordered.sum(axis=1)))
+            ordered = np.roll(ordered, -start, axis=0)
+        return ordered.astype(np.float32)
+
+    def _warp_door_candidate(self, gray, corners):
+        size = int(self.door_canonical_size)
+        destination = np.asarray(
+            [[0, 0], [size - 1, 0], [size - 1, size - 1], [0, size - 1]],
+            dtype=np.float32,
+        )
+        transform = cv2.getPerspectiveTransform(np.asarray(corners, dtype=np.float32), destination)
+        return cv2.warpPerspective(gray, transform, (size, size), flags=cv2.INTER_LINEAR)
+
+    def _validate_door_patch(self, patch):
+        if patch is None or patch.size == 0:
+            return None
+        size = int(patch.shape[0])
+        blurred = cv2.GaussianBlur(patch, (5, 5), 0)
+        _, dark = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY_INV | cv2.THRESH_OTSU)
+        dark = (dark > 0).astype(np.uint8)
+
+        edge_lo = max(2, int(round(size * 0.012)))
+        edge_hi = max(edge_lo + 3, int(round(size * 0.10)))
+        along_lo = int(round(size * 0.10))
+        along_hi = int(round(size * 0.90))
+        border_ratios = [
+            float(np.mean(dark[edge_lo:edge_hi, along_lo:along_hi])),
+            float(np.mean(dark[size - edge_hi:size - edge_lo, along_lo:along_hi])),
+            float(np.mean(dark[along_lo:along_hi, edge_lo:edge_hi])),
+            float(np.mean(dark[along_lo:along_hi, size - edge_hi:size - edge_lo])),
+        ]
+        min_border = min(border_ratios)
+        if min_border < 0.055:
+            return None
+        border_score = float(np.clip((min_border - 0.055) / 0.24, 0.0, 1.0))
+
+        interior_lo = int(round(size * 0.16))
+        interior_hi = int(round(size * 0.84))
+        interior_dark = float(np.mean(dark[interior_lo:interior_hi, interior_lo:interior_hi]))
+        if interior_dark > 0.34:
+            return None
+        white_score = float(np.clip((0.34 - interior_dark) / 0.30, 0.0, 1.0))
+
+        circles = cv2.HoughCircles(
+            blurred,
+            cv2.HOUGH_GRADIENT,
+            dp=1.2,
+            minDist=size * 0.18,
+            param1=105,
+            param2=15,
+            minRadius=max(10, int(round(size * 0.055))),
+            maxRadius=max(18, int(round(size * 0.18))),
+        )
+        if circles is None:
+            return None
+
+        yy, xx = np.indices((size, size), dtype=np.float32)
+        best = None
+        for circle in circles[0][:8]:
+            cx, cy, radius = (float(circle[0]), float(circle[1]), float(circle[2]))
+            if not (size * 0.30 <= cx <= size * 0.70 and size * 0.26 <= cy <= size * 0.70):
+                continue
+            distance = np.sqrt((xx - cx) ** 2 + (yy - cy) ** 2)
+            annulus = (distance >= radius * 0.72) & (distance <= radius * 1.30)
+            core = distance <= radius * 0.52
+            annulus_dark = float(np.mean(dark[annulus])) if np.any(annulus) else 0.0
+            core_dark = float(np.mean(dark[core])) if np.any(core) else 1.0
+            if annulus_dark < 0.10 or core_dark > 0.46:
+                continue
+            circle_score = float(
+                np.clip((annulus_dark - 0.10) / 0.40, 0.0, 1.0) * 0.74
+                + np.clip((0.46 - core_dark) / 0.40, 0.0, 1.0) * 0.26
+            )
+            direction = self._door_direction_scores(dark, (cx, cy), radius)
+            if direction is None:
+                continue
+            score = border_score * 0.22 + circle_score * 0.36 + direction["score"] * 0.34 + white_score * 0.08
+            candidate = {
+                "score": float(np.clip(score, 0.0, 1.0)),
+                "symbol_score": circle_score,
+                "direction_score": direction["score"],
+                "direction_index": direction["index"],
+            }
+            if best is None or candidate["score"] > best["score"]:
+                best = candidate
+        return best
+
+    def _door_direction_scores(self, dark, center, radius):
+        size = int(dark.shape[0])
+        center = np.asarray(center, dtype=np.float32)
+        directions = np.asarray([[0, -1], [1, 0], [0, 1], [-1, 0]], dtype=np.float32)
+        perpendiculars = np.asarray([[1, 0], [0, 1], [1, 0], [0, 1]], dtype=np.float32)
+        scores = []
+        strengths = []
+        for direction, perpendicular in zip(directions, perpendiculars):
+            if direction[0] > 0:
+                border_distance = size - 1 - center[0]
+            elif direction[0] < 0:
+                border_distance = center[0]
+            elif direction[1] > 0:
+                border_distance = size - 1 - center[1]
+            else:
+                border_distance = center[1]
+            line_start = radius + size * 0.014
+            line_end = min(radius + size * 0.34, border_distance - size * 0.10)
+            if line_end <= line_start + size * 0.045:
+                scores.append(-1.0)
+                strengths.append(0.0)
+                continue
+            line_mask = self._door_strip_mask(
+                dark.shape,
+                center,
+                direction,
+                perpendicular,
+                line_start,
+                line_end,
+                size * 0.030,
+            )
+            strength = float(np.mean(dark[line_mask])) if np.any(line_mask) else 0.0
+            strengths.append(strength)
+            scores.append(strength)
+
+        order = np.argsort(scores)[::-1]
+        best_index = int(order[0])
+        best_score = float(scores[best_index])
+        second_score = float(scores[int(order[1])]) if len(order) > 1 else 0.0
+        margin = best_score - second_score
+        if best_score < 0.085 or margin < 0.018:
+            return None
+        normalized = float(
+            np.clip((best_score - 0.085) / 0.34, 0.0, 1.0) * 0.72
+            + np.clip(margin / 0.22, 0.0, 1.0) * 0.28
+        )
+        return {"index": best_index, "score": normalized}
+
+    def _door_strip_mask(self, shape, center, direction, perpendicular, start, end, half_width):
+        mask = np.zeros(shape, dtype=np.uint8)
+        if end <= start:
+            return mask.astype(bool)
+        points = np.asarray(
+            [
+                center + direction * start - perpendicular * half_width,
+                center + direction * start + perpendicular * half_width,
+                center + direction * end + perpendicular * half_width,
+                center + direction * end - perpendicular * half_width,
+            ],
+            dtype=np.float32,
+        )
+        cv2.fillConvexPoly(mask, np.round(points).astype(np.int32), 1, cv2.LINE_8)
+        return mask.astype(bool)
+
+    def _validate_door_corners(self, corners, image_shape):
+        corners = np.asarray(corners, dtype=np.float32)
+        if corners.shape != (4, 2):
+            return False
+        height, width = image_shape[:2]
+        if np.any(corners[:, 0] < -2) or np.any(corners[:, 0] >= width + 2):
+            return False
+        if np.any(corners[:, 1] < -2) or np.any(corners[:, 1] >= height + 2):
+            return False
+        if self._polygon_area(corners) < 800.0 or not self._is_convex_quad(corners):
+            return False
+        edges = np.asarray([np.linalg.norm(corners[(idx + 1) % 4] - corners[idx]) for idx in range(4)], dtype=np.float32)
+        if float(np.min(edges)) < 36.0:
+            return False
+        if float(np.max(edges) / max(np.min(edges), 1.0)) > 3.2:
+            return False
+        diagonal_a = float(np.linalg.norm(corners[2] - corners[0]))
+        diagonal_b = float(np.linalg.norm(corners[3] - corners[1]))
+        return max(diagonal_a, diagonal_b) / max(min(diagonal_a, diagonal_b), 1.0) <= 2.3
+
+    def _door_tracking_features(self, gray, H, corners):
+        mask = np.zeros(gray.shape, dtype=np.uint8)
+        cv2.fillConvexPoly(mask, np.round(corners).astype(np.int32), 255, cv2.LINE_8)
+        mask = cv2.erode(mask, np.ones((5, 5), dtype=np.uint8), iterations=1)
+        features = cv2.goodFeaturesToTrack(
+            gray,
+            maxCorners=80,
+            qualityLevel=0.006,
+            minDistance=6,
+            mask=mask,
+            blockSize=5,
+            useHarrisDetector=False,
+        )
+        if features is None:
+            image_points = np.empty((0, 2), dtype=np.float32)
+        else:
+            image_points = features.reshape(-1, 2).astype(np.float32)
+        image_points = np.vstack([np.asarray(corners, dtype=np.float32), image_points])
+        try:
+            inverse_h = np.linalg.inv(np.asarray(H, dtype=np.float64))
+        except np.linalg.LinAlgError:
+            return None, None
+        world_points = cv2.perspectiveTransform(
+            image_points.reshape(-1, 1, 2), inverse_h.astype(np.float32)
+        ).reshape(-1, 2)
+        size = float(self.DOOR_BOARD_SIZE)
+        valid = (
+            np.isfinite(world_points).all(axis=1)
+            & (world_points[:, 0] >= -4.0)
+            & (world_points[:, 0] <= size + 4.0)
+            & (world_points[:, 1] >= -4.0)
+            & (world_points[:, 1] <= size + 4.0)
+        )
+        return image_points[valid].astype(np.float32), world_points[valid].astype(np.float32)
+
+    def _track_last_door_points(self, gray):
+        if self.last_gray is None or self.last_door_image_points is None or self.last_door_world_points is None:
+            return None
+        previous = np.asarray(self.last_door_image_points, dtype=np.float32)
+        world = np.asarray(self.last_door_world_points, dtype=np.float32)
+        if previous.shape != world.shape or previous.ndim != 2 or previous.shape[0] < 8:
+            return None
+
+        next_points, status, errors = cv2.calcOpticalFlowPyrLK(
+            self.last_gray,
+            gray,
+            previous.reshape(-1, 1, 2),
+            None,
+            winSize=(27, 27),
+            maxLevel=3,
+            criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 24, 0.02),
+        )
+        if next_points is None or status is None:
+            return None
+        backward, backward_status, _ = cv2.calcOpticalFlowPyrLK(
+            gray,
+            self.last_gray,
+            next_points,
+            None,
+            winSize=(27, 27),
+            maxLevel=3,
+            criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 18, 0.03),
+        )
+        if backward is None or backward_status is None:
+            return None
+
+        tracked = next_points.reshape(-1, 2).astype(np.float32)
+        backward = backward.reshape(-1, 2).astype(np.float32)
+        valid = status.reshape(-1).astype(bool) & backward_status.reshape(-1).astype(bool)
+        forward_backward_error = np.linalg.norm(backward - previous, axis=1)
+        valid &= np.isfinite(forward_backward_error) & (forward_backward_error <= 2.4)
+        if errors is not None:
+            error_values = errors.reshape(-1)
+            valid &= np.isfinite(error_values) & (error_values <= 32.0)
+        valid &= ~self._points_inside_hand(tracked)
+        if int(np.count_nonzero(valid)) < max(7, int(previous.shape[0] * 0.32)):
+            return None
+
+        valid_world = world[valid]
+        valid_image = tracked[valid]
+        H, inlier_mask = cv2.findHomography(valid_world, valid_image, cv2.RANSAC, 3.2)
+        if H is None or inlier_mask is None:
+            return None
+        inliers = inlier_mask.reshape(-1).astype(bool)
+        if int(np.count_nonzero(inliers)) < max(7, int(valid_world.shape[0] * 0.58)):
+            return None
+
+        inlier_world = valid_world[inliers]
+        inlier_image = valid_image[inliers]
+        H = self._normalize_homography(H)
+        plane_size = (self.DOOR_BOARD_SIZE, self.DOOR_BOARD_SIZE)
+        corners = self._board_corners_from_homography(H, plane_size)
+        if not self._validate_door_corners(corners, gray.shape):
+            return None
+
+        projected = self._project_points(inlier_world, H)
+        if projected is None:
+            return None
+        reprojection_error = float(np.mean(np.linalg.norm(projected - inlier_image, axis=1)))
+        if reprojection_error > 4.8:
+            return None
+
+        observed_ratio = inlier_image.shape[0] / max(float(previous.shape[0]), 1.0)
+        confidence = float(
+            np.clip(
+                (1.0 / (1.0 + reprojection_error * 0.50)) * 0.62
+                + observed_ratio * 0.25
+                + np.clip(1.0 - float(np.mean(forward_backward_error[valid])) / 2.4, 0.0, 1.0) * 0.13,
+                0.0,
+                0.91,
+            )
+        )
+        result = {
+            "H": H,
+            "corners": corners.astype(np.float32),
+            "marker_centers": corners.astype(np.float32),
+            "observed_marker_centers": corners.astype(np.float32),
+            "marker_observed": None,
+            "score": confidence,
+            "homography_confidence": confidence,
+            "reprojection_error": reprojection_error,
+            "matched_points": int(inlier_image.shape[0]),
+            "plane_size": plane_size,
+            "detector_mode": "door_marker",
+            "door_image_points": inlier_image.copy(),
+            "door_world_points": inlier_world.copy(),
+            "selected_marker_centers": corners.astype(np.float32),
+            "candidate_count": int(inlier_image.shape[0]),
+        }
+        return self._accept_marker_result(result, gray, "door_flow")
+
+    def _project_points(self, points, H):
+        points = np.asarray(points, dtype=np.float32)
+        if points.size == 0:
+            return np.empty((0, 2), dtype=np.float32)
+        homogeneous = np.column_stack([points, np.ones(len(points), dtype=np.float32)])
+        projected = (np.asarray(H, dtype=np.float32) @ homogeneous.T).T
+        if not bool(np.all(np.abs(projected[:, 2]) > 1e-8)):
+            return None
+        return (projected[:, :2] / projected[:, 2:3]).astype(np.float32)
 
     def _preview_result_from_corners(self, corners, method, score):
         plane_size = self._plane_size_for_image_quad(corners)
@@ -798,6 +1323,11 @@ class PlaneTracker:
         self.last_gray = gray
         self.last_marker_centers = marker_centers
         self.last_marker_observed = marker_result.get("marker_observed")
+        if marker_result.get("door_image_points") is not None:
+            self.last_door_image_points = np.asarray(marker_result["door_image_points"], dtype=np.float32)
+        if marker_result.get("door_world_points") is not None:
+            self.last_door_world_points = np.asarray(marker_result["door_world_points"], dtype=np.float32)
+        self.active_detector_mode = marker_result.get("detector_mode", self.active_detector_mode or self.detector_mode)
         self.last_homography_confidence = confidence
         self.missed_frames = 0
 
@@ -819,6 +1349,11 @@ class PlaneTracker:
             "selected_marker_centers": marker_result.get("selected_marker_centers"),
             "white_validation_score": marker_result.get("white_validation_score"),
             "marker_quad_score": marker_result.get("marker_quad_score"),
+            "detector_mode": marker_result.get("detector_mode", self.active_detector_mode or self.detector_mode),
+            "door_symbol_score": marker_result.get("door_symbol_score"),
+            "door_direction_score": marker_result.get("door_direction_score"),
+            "door_image_points": marker_result.get("door_image_points"),
+            "door_world_points": marker_result.get("door_world_points"),
             "plane_size": plane_size,
         }
 

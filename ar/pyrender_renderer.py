@@ -112,6 +112,73 @@ class PyrenderModelRenderer:
         self._alpha_blend(frame, rgba, alpha)
         return True
 
+    def render_models(self, frame, pose, model_specs):
+        """Render several board-space models in one pyrender pass.
+
+        Each spec accepts: model_path, board_pos, size, height_offset,
+        yaw_degrees, and alpha. The return value mirrors model_specs with
+        True for specs that were added to the scene.
+        """
+        statuses = [False] * len(model_specs or [])
+        if not self.available or pose is None or not model_specs:
+            return statuses
+
+        height, width = frame.shape[:2]
+        renderer = self._get_renderer(width, height)
+        if renderer is None:
+            return statuses
+
+        scene = pyrender.Scene(bg_color=[0.0, 0.0, 0.0, 0.0], ambient_light=[0.35, 0.35, 0.35, 1.0])
+        max_alpha = 0.0
+        for index, spec in enumerate(model_specs):
+            model_path = spec.get("model_path")
+            if not model_path:
+                continue
+
+            path = Path(model_path)
+            if path.suffix.lower() not in self.SUPPORTED_SUFFIXES or not path.exists():
+                continue
+
+            meshes = self._load_meshes(path, allow_pending=False)
+            if not meshes:
+                continue
+
+            model_pose = self._model_pose(
+                spec.get("board_pos", (0.0, 0.0)),
+                float(spec.get("size", 1.0)),
+                float(spec.get("height_offset", 0.0)),
+                float(spec.get("yaw_degrees", 0.0)),
+            )
+            for mesh in meshes:
+                scene.add(mesh, pose=model_pose)
+            statuses[index] = True
+            max_alpha = max(max_alpha, float(spec.get("alpha", 1.0)))
+
+        if not any(statuses):
+            return statuses
+
+        camera_pose = self._camera_pose_from_solvepnp(pose["rvec"], pose["tvec"])
+        camera = pyrender.IntrinsicsCamera(
+            fx=float(pose["camera_matrix"][0, 0]),
+            fy=float(pose["camera_matrix"][1, 1]),
+            cx=float(pose["camera_matrix"][0, 2]),
+            cy=float(pose["camera_matrix"][1, 2]),
+            znear=1.0,
+            zfar=10000.0,
+        )
+        scene.add(camera, pose=camera_pose)
+        scene.add(pyrender.DirectionalLight(color=np.ones(3), intensity=2.6), pose=camera_pose)
+
+        try:
+            rgba, _ = renderer.render(scene, flags=pyrender.RenderFlags.RGBA | pyrender.RenderFlags.SKIP_CULL_FACES)
+        except Exception:
+            return [False] * len(statuses)
+
+        if rgba.shape[2] < 4 or np.max(rgba[:, :, 3]) <= 0:
+            return [False] * len(statuses)
+
+        self._alpha_blend(frame, rgba, max_alpha if max_alpha > 0.0 else 1.0)
+        return statuses
     def _get_renderer(self, width, height):
         size = (width, height)
         if self.renderer is not None and self.renderer_size == size:
@@ -296,3 +363,4 @@ class PyrenderModelRenderer:
         bgr = rgb[:, :, ::-1]
         blended = bgr * alpha + frame.astype(np.float32) * (1.0 - alpha)
         np.copyto(frame, blended.astype(np.uint8))
+

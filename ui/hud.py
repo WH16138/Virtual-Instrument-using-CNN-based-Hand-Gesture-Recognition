@@ -94,7 +94,7 @@ class HUD:
         HUD._panel(frame, x, y, w, h, alpha=0.56)
         if not plane_registered:
             title = "Board setup"
-            detail = "Place marked A4 in view, then hold OK."
+            detail = "Show the gate marker, then hold OK."
             color = (80, 190, 255)
         else:
             title = "Board registered"

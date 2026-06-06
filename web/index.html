@@ -3,24 +3,116 @@
 <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>VisionQuest Mobile Camera</title>
+    <title>VisionQuest Mobile AR View</title>
     <style>
-        body { margin: 0; font-family: Arial, sans-serif; background: #111; color: #eee; display: flex; flex-direction: column; align-items: center; min-height: 100vh; }
-        #video { width: 100%; max-width: 540px; border-radius: 12px; background: #000; }
-        #status { margin: 14px 0; font-size: 1rem; }
-        #controls { display: flex; gap: 10px; flex-wrap: wrap; justify-content: center; }
-        .badge { padding: 10px 14px; border-radius: 999px; background: #222; border: 1px solid #444; color: #fff; font-size: 0.95rem; }
-        a { color: #59f; }
+        * { box-sizing: border-box; }
+        body {
+            margin: 0;
+            min-height: 100vh;
+            overflow: hidden;
+            font-family: Arial, sans-serif;
+            background: #07090c;
+            color: #eee;
+        }
+        #stage {
+            position: fixed;
+            inset: 0;
+            background: #000;
+        }
+        #preview {
+            width: 100vw;
+            height: 100vh;
+            object-fit: contain;
+            background: #000;
+            display: block;
+        }
+        #video {
+            position: fixed;
+            right: 12px;
+            bottom: 72px;
+            width: min(34vw, 190px);
+            max-height: 26vh;
+            object-fit: cover;
+            border: 1px solid rgba(255,255,255,0.35);
+            border-radius: 8px;
+            background: #000;
+            box-shadow: 0 8px 24px rgba(0,0,0,0.45);
+        }
+        #stage.camera-mode #preview {
+            position: fixed;
+            right: 12px;
+            bottom: 72px;
+            width: min(34vw, 190px);
+            height: auto;
+            max-height: 26vh;
+            border: 1px solid rgba(255,255,255,0.35);
+            border-radius: 8px;
+            z-index: 2;
+        }
+        #stage.camera-mode #video {
+            inset: 0;
+            width: 100vw;
+            height: 100vh;
+            max-height: none;
+            border: 0;
+            border-radius: 0;
+            object-fit: contain;
+            z-index: 1;
+        }
+        #hud {
+            position: fixed;
+            left: 12px;
+            right: 12px;
+            bottom: 12px;
+            display: flex;
+            gap: 8px;
+            align-items: center;
+            flex-wrap: wrap;
+            z-index: 5;
+            pointer-events: none;
+        }
+        .badge, button {
+            padding: 8px 10px;
+            border-radius: 999px;
+            border: 1px solid rgba(255,255,255,0.18);
+            background: rgba(16,20,28,0.76);
+            color: #fff;
+            font-size: 0.82rem;
+            backdrop-filter: blur(8px);
+        }
+        #connection.connected { background: rgba(18, 88, 52, 0.82); }
+        button {
+            pointer-events: auto;
+            cursor: pointer;
+        }
+        button.active { border-color: #8df; background: rgba(42, 74, 96, 0.86); }
+        #status {
+            position: fixed;
+            left: 12px;
+            top: 12px;
+            max-width: calc(100vw - 24px);
+            padding: 8px 10px;
+            border-radius: 8px;
+            background: rgba(0,0,0,0.55);
+            color: #f2f2f2;
+            z-index: 5;
+            font-size: 0.88rem;
+        }
     </style>
 </head>
 <body>
-    <h1>VisionQuest Mobile Camera</h1>
-    <video id="video" autoplay playsinline muted></video>
+    <div id="stage">
+        <img id="preview" alt="PC rendered AR preview" />
+        <video id="video" autoplay playsinline muted></video>
+    </div>
     <div id="status">Loading camera...</div>
-    <div id="controls">
-        <div class="badge" id="connection">WebSocket: disconnected</div>
-        <div class="badge" id="frames">Frames sent: 0</div>
-        <div class="badge" id="quality">JPEG quality: 0.7</div>
+    <div id="hud">
+        <div class="badge" id="connection">Disconnected</div>
+        <div class="badge" id="frames">Sent 0</div>
+        <div class="badge" id="preview-frames">Preview 0</div>
+        <div class="badge" id="quality">JPEG 0.7</div>
+        <button id="ar-view" class="active" type="button">AR View</button>
+        <button id="camera-view" type="button">Camera</button>
     </div>
     <script src="app.js"></script>
 </body>

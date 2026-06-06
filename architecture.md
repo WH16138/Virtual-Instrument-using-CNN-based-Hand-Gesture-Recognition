@@ -168,7 +168,7 @@ This file intentionally keeps core homography math project-owned instead of dele
 
 Responsibilities:
 
-- draw A4 floor/grid
+- draw gate-board floor/grid
 - derive approximate camera pose with `solvePnP`
 - render ground and enemy models
 - apply fallback OpenCV geometry if textured rendering fails
@@ -177,7 +177,7 @@ Current rendering policy:
 
 - Player model is not rendered.
 - Decorative board corner pillars are not rendered.
-- Ground model is centered on the A4 board.
+- Ground model is centered on the 150 mm gate board.
 - Enemy model is above the ground and slowly bobs.
 
 ## `ar/pyrender_renderer.py`
@@ -258,7 +258,7 @@ Important files:
 
 Important flags in `main.py`:
 
-- `plane_registered`: A4 board has been registered
+- `plane_registered`: gate board has been registered
 - `game_started`: battle has started
 - `debug_mode`: debug overlays are visible
 - `freshness_grace_until`: prevents short processing pauses from returning to QR setup
@@ -269,7 +269,7 @@ Expected main loop order:
 ```text
 read latest fresh frame
   -> detect hands/gestures on interval
-  -> track A4 board
+  -> track gate board
   -> complete setup when OK hold reaches the threshold
   -> update game state
   -> render AR

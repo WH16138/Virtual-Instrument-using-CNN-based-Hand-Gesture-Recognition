@@ -18,7 +18,7 @@ from vision.hand_tracker import HandTracker
 FRAME_STALE_SECONDS = 5.0
 FRAME_STALE_GRACE_SECONDS = 2.5
 VISION_INTERVAL_FRAMES = 2
-PRE_REGISTRATION_VISION_INTERVAL_FRAMES = 6
+PRE_REGISTRATION_VISION_INTERVAL_FRAMES = 2
 PLANE_PREVIEW_INTERVAL_FRAMES = 3
 GESTURE_CONFIDENCE_THRESHOLD = 0.6
 SETUP_GESTURE = "OK_Sign"
@@ -143,7 +143,7 @@ def draw_runtime_diagnostics(frame, fps, hand_detection, plane_registered, game_
         1,
     )
 
-    plane_text = "A4 board registered" if plane_registered else "Center an A4 sheet and hold OK"
+    plane_text = "Gate board registered" if plane_registered else "Show the gate marker and hold OK"
     game_text = "Game started" if game_started else "Game not started"
     cv2.putText(
         frame,
@@ -240,7 +240,7 @@ def draw_a4_detection_highlight(frame, tracking_result, plane_registered, setup_
         candidate_count = (tracking_result or {}).get("candidate_count", len(marker_candidates))
         cv2.putText(
             frame,
-            f"A4 not detected | markers: {candidate_count}{detail}",
+            (f"Gate marker not detected | candidates: {candidate_count}{detail}" if (tracking_result or {}).get("detector_mode") == "door_marker" else f"A4 not detected | markers: {candidate_count}{detail}"),
             (16, 112),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.48,
@@ -306,11 +306,18 @@ def draw_a4_detection_highlight(frame, tracking_result, plane_registered, setup_
     plane_size = tracking_result.get("plane_size")
     size_text = ""
     if plane_size is not None:
-        orientation = "landscape" if plane_size[0] > plane_size[1] else "portrait"
-        size_text = f", {orientation}"
+        size_text = f", {float(plane_size[0]):.0f}x{float(plane_size[1]):.0f}mm"
     matched_points = tracking_result.get("matched_points", 0)
     if stale:
-        text = "A4 temporarily occluded - holding last corners"
+        text = "Board temporarily occluded - holding last pose"
+    elif tracking_result.get("tracking_method") in ("door_marker", "door_redetect"):
+        symbol_score = tracking_result.get("door_symbol_score")
+        direction_score = tracking_result.get("door_direction_score")
+        symbol_text = f", symbol {symbol_score:.2f}" if symbol_score is not None else ""
+        direction_text = f", direction {direction_score:.2f}" if direction_score is not None else ""
+        text = f"Gate board detected (H {confidence:.2f}{symbol_text}{direction_text}{size_text})"
+    elif tracking_result.get("tracking_method") == "door_flow":
+        text = f"Gate board tracking ({matched_points} points, H {confidence:.2f}{error_text})"
     elif tracking_result.get("tracking_method") in ("corner_marks", "corner_marks_partial"):
         white_score = tracking_result.get("white_validation_score")
         white_text = f", white {white_score:.2f}" if white_score is not None else ""
@@ -329,9 +336,9 @@ def draw_a4_detection_highlight(frame, tracking_result, plane_registered, setup_
         score = tracking_result.get("track_score", 0.0)
         text = f"A4 tracked from previous frame ({score:.2f}, H {confidence:.2f})"
     elif plane_registered:
-        text = "A4 detected / registered"
+        text = "Board detected / registered"
     else:
-        text = "A4 detected - hold OK"
+        text = "Gate board detected - hold OK"
     cv2.rectangle(frame, (8, 88), (560, 124), (0, 0, 0), -1)
     cv2.putText(frame, text, (16, 112), cv2.FONT_HERSHEY_SIMPLEX, 0.62, color, 2, cv2.LINE_AA)
 
@@ -395,7 +402,7 @@ def main():
     hand_tracker = HandTracker(max_num_hands=2)
     gesture_detector = GestureDetector()
     plane_tracker = PlaneTracker()
-    ar_renderer = ARRenderer(plane_size=(210, 297))
+    ar_renderer = ARRenderer(plane_size=(150, 150))
     game_manager = GameManager()
     floating_text = FloatingTextManager()
     action_cards = ActionCardRenderer()
@@ -420,7 +427,7 @@ def main():
 
     print("Ready.")
     print("Open the QR URL on your phone.")
-    print("Controls: hold OK sign=register A4 board/start, D=debug overlays, R=reset, Q=quit")
+    print("Controls: hold OK sign=register gate board/start, D=debug overlays, R=reset, Q=quit")
 
     try:
         while True:
@@ -430,6 +437,7 @@ def main():
             in_freshness_grace = frame is not None and now < freshness_grace_until
             if frame is None or (not frame_is_fresh and not in_freshness_grace):
                 waiting_frame = draw_waiting_frame(frame_receiver, websocket_server.page_url, qr_image)
+                websocket_server.publish_rendered_frame(waiting_frame)
                 display_width, display_height = get_display_size(WINDOW_NAME)
                 cv2.imshow(WINDOW_NAME, prepare_display_frame(waiting_frame, display_width, display_height))
                 if cv2.waitKey(1) & 0xFF == ord("q"):
@@ -463,8 +471,8 @@ def main():
                 plane_size = current_tracking_result.get("plane_size")
                 if plane_size is not None:
                     ar_renderer.set_plane_size(plane_size)
-                    game_manager.player_pos = (ar_renderer.plane_width * 0.50, ar_renderer.plane_height * 0.77)
-                    game_manager.enemy_pos = (ar_renderer.plane_width * 0.50, ar_renderer.plane_height * 0.24)
+                    game_manager.player_pos = (ar_renderer.plane_width * 0.50, ar_renderer.plane_height * 0.79)
+                    game_manager.enemy_pos = (ar_renderer.plane_width * 0.50, ar_renderer.plane_height * 0.44)
                 if not viewport_prepared:
                     viewport_prepared = ar_renderer.prepare_viewport(frame.shape)
 
@@ -476,7 +484,7 @@ def main():
                 if setup_gesture_counter >= SETUP_GESTURE_HOLD_FRAMES:
                     if not plane_registered and not plane_tracker.register_tracking_result(current_tracking_result):
                         setup_gesture_counter = 0
-                        print("A4 board registration failed. Center a marked A4 sheet in the camera view.")
+                        print("Gate board registration failed. Show the full square gate marker in the camera view.")
                     else:
                         plane_registered = True
                         game_manager.start_game()
@@ -485,7 +493,7 @@ def main():
                         action_cards.reset()
                         setup_gesture_counter = 0
                         freshness_grace_until = time.monotonic() + FRAME_STALE_GRACE_SECONDS
-                        print("A4 board registered and game started by OK sign.")
+                        print("Gate board registered and game started by OK sign.")
 
             if game_started:
                 action_performed = game_manager.process_gesture(gesture_info)
@@ -536,6 +544,7 @@ def main():
             if debug_mode or not plane_registered:
                 draw_runtime_diagnostics(frame, fps, hand_detection, plane_registered, game_started)
 
+            websocket_server.publish_rendered_frame(frame)
             display_width, display_height = get_display_size(WINDOW_NAME)
             cv2.imshow(WINDOW_NAME, prepare_display_frame(frame, display_width, display_height))
             key = cv2.waitKey(1) & 0xFF
@@ -567,3 +576,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

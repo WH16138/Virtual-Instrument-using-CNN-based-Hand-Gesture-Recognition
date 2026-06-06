@@ -8,9 +8,9 @@ from ar.pyrender_renderer import PyrenderModelRenderer
 
 
 class ARRenderer:
-    """Render 3D-style objects whose bases are exactly on the A4 homography."""
+    """Render 3D-style objects aligned to the active board homography."""
 
-    def __init__(self, plane_size=(210, 297)):
+    def __init__(self, plane_size=(150, 150)):
         self.set_plane_size(plane_size)
         self.focal_px = None
         self.homography_samples = []
@@ -47,57 +47,60 @@ class ARRenderer:
         enemy_color = tuple(enemy_state.get("color", (30, 30, 230)))
         ground_pos = (self.plane_width * 0.5, self.plane_height * 0.5)
         ground_model_path = enemy_state.get("ground_model_path")
-        ground_drawn = self.pbr_renderer.render_model(
+        enemy_model_path = enemy_state.get("model_path")
+        enemy_float_offset = 12.0 + np.sin(time.monotonic() * 1.8) * 5.0
+
+        ground_drawn, enemy_drawn = self.pbr_renderer.render_models(
             frame,
-            ground_model_path,
             pose,
-            ground_pos,
-            size=min(self.plane_width, self.plane_height) * 0.62,
-            height_offset=0.0,
-            alpha=0.96,
+            [
+                {
+                    "model_path": ground_model_path,
+                    "board_pos": ground_pos,
+                    "size": self.plane_width * 0.92,
+                    "height_offset": -0.35,
+                    "alpha": 0.96,
+                },
+                {
+                    "model_path": enemy_model_path,
+                    "board_pos": enemy_pos,
+                    "size": 62,
+                    "height_offset": enemy_float_offset,
+                    "yaw_degrees": 180.0,
+                    "alpha": 1.0,
+                },
+            ],
         )
+
         if not ground_drawn:
             ground_drawn = self._draw_model_unit(
                 frame,
                 pos=ground_pos,
                 label=None,
                 color=(72, 78, 82),
-                size=min(self.plane_width, self.plane_height) * 0.62,
+                size=self.plane_width * 0.92,
                 model_path=ground_model_path,
                 pose=pose,
-                height_offset=0.0,
+                height_offset=-0.35,
                 alpha=0.62,
                 draw_label=False,
             )
         if not ground_drawn:
             self._draw_ground_platform(frame, H, ground_pos, enemy_color)
 
-        enemy_model_path = enemy_state.get("model_path")
-        enemy_float_offset = 12.0 + np.sin(time.monotonic() * 1.8) * 5.0
-        enemy_drawn = self.pbr_renderer.render_model(
-            frame,
-            enemy_model_path,
-            pose,
-            enemy_pos,
-            size=46,
-            height_offset=enemy_float_offset,
-            yaw_degrees=180.0,
-            alpha=1.0,
-        )
         if not enemy_drawn:
             enemy_drawn = self._draw_model_unit(
-            frame,
-            pos=enemy_pos,
-            label="E",
-            color=enemy_color,
-            size=38,
-            model_path=enemy_model_path,
-            pose=pose,
-            height_offset=enemy_float_offset,
+                frame,
+                pos=enemy_pos,
+                label="E",
+                color=enemy_color,
+                size=56,
+                model_path=enemy_model_path,
+                pose=pose,
+                height_offset=enemy_float_offset,
             )
         if not enemy_drawn:
-            self._draw_cube(frame, H, enemy_pos, "E", enemy_color, 34, pose=pose, height_offset=enemy_float_offset)
-
+            self._draw_cube(frame, H, enemy_pos, "E", enemy_color, 52, pose=pose, height_offset=enemy_float_offset)
         return frame
 
     def _draw_floor(self, frame, H):
@@ -154,8 +157,8 @@ class ARRenderer:
         )
 
     def _draw_ground_platform(self, frame, H, center, color):
-        width = self.plane_width * 0.72
-        height = self.plane_height * 0.42
+        width = self.plane_width * 0.94
+        height = self.plane_height * 0.94
         x, y = center
         points = self._project_board_points(
             H,
@@ -585,3 +588,4 @@ class ARRenderer:
 
     def _shade_color(self, color, factor):
         return tuple(max(0, min(255, int(channel * factor))) for channel in color)
+
