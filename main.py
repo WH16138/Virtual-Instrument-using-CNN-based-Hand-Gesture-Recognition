@@ -5,6 +5,7 @@ import time
 from ar.ar_renderer import ARRenderer
 from ar.homography import HomographyEstimator
 from ar.plane_tracker import PlaneTracker
+from audio.audio_manager import AudioManager
 from game.battle_system import BattleState
 from game.game_manager import GameManager
 from network.frame_receiver import FrameReceiver
@@ -571,6 +572,7 @@ def main():
     game_manager = GameManager()
     floating_text = FloatingTextManager()
     action_cards = ActionCardRenderer()
+    audio_manager = AudioManager()
     game_manager.player_pos = (105, 230)
     game_manager.enemy_pos = (105, 70)
     ar_renderer.preload_models(collect_game_model_paths(game_manager))
@@ -674,6 +676,7 @@ def main():
                         setup_gesture_started_at = None
                         defeat_restart_started_at = None
                         freshness_grace_until = time.monotonic() + FRAME_STALE_GRACE_SECONDS
+                        audio_manager.play_sfx("start")
                         print("Gate board registered and game started by OK sign.")
             if game_started:
                 action_performed = game_manager.process_gesture(gesture_info)
@@ -708,12 +711,15 @@ def main():
                         defeat_restart_progress = 0.0
                         freshness_grace_until = time.monotonic() + FRAME_STALE_GRACE_SECONDS
                         game_state = game_manager.get_game_state()
+                        audio_manager.play_sfx("restart")
                         print("Game restarted by OK sign.")
                 else:
                     defeat_restart_started_at = None
             else:
                 defeat_restart_started_at = None
             events = game_manager.consume_events() if game_started else []
+            audio_manager.play_events(events, game_state)
+            audio_manager.update_music(game_started, game_state)
             player_feedback_pos = (
                 (ar_renderer.plane_width * 0.34, ar_renderer.plane_height + 31.0)
                 if H is not None and game_started
@@ -811,8 +817,10 @@ def main():
                 viewport_prepared = False
                 last_frame_shape = None
                 freshness_grace_until = 0.0
+                audio_manager.stop_bgm()
                 print("Game reset.")
     finally:
+        audio_manager.close()
         ar_renderer.close()
         websocket_server.stop()
         cv2.destroyAllWindows()

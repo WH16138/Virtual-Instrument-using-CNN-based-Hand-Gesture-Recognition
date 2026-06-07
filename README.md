@@ -239,6 +239,30 @@ Implemented augments:
 - Insurance
 - First Strike
 
+
+## PC Audio
+
+PC-side audio is implemented with `pygame.mixer` through `audio/AudioManager`.
+
+The game still runs if `pygame` is unavailable or if audio files are missing. Add files under `assets/audio/` to enable playback:
+
+```text
+assets/audio/bgm/dungeon_loop.ogg
+assets/audio/bgm/setup_loop.ogg
+assets/audio/sfx/card_confirm.wav
+assets/audio/sfx/strike.wav
+assets/audio/sfx/shot.wav
+assets/audio/sfx/guard.wav
+assets/audio/sfx/hit.wav
+assets/audio/sfx/block.wav
+assets/audio/sfx/heal.wav
+assets/audio/sfx/wave_clear.wav
+assets/audio/sfx/reward.wav
+assets/audio/sfx/defeat.wav
+```
+
+See `assets/audio/README.md` for the full supported filename list.
+
 ## Known Limitations
 
 - HTTPS/WSS is not implemented.
