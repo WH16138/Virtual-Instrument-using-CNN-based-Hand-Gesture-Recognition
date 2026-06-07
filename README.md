@@ -26,24 +26,22 @@ Phone camera
 
 ## 2. Demo / Screenshots
 
-> [문서화 TODO - 스크린샷 첨부 후 이 문단 삭제] 아래 표의 경로에 실제 실행 화면을 저장하고 README에 이미지 링크를 추가하십시오.
-
-| Scene | Recommended Path | Description |
-|---|---|---|
-| QR setup | `assets/docs/01_qr_setup.png` | PC 화면에 QR과 연결 주소가 표시되는 초기 화면 |
-| Connection example | `assets/docs/02_connection_example.png` | PC 와 모바일 기기 연결 예시 |
-| Board registration | `assets/docs/03_board_registration.png` | gate marker를 감지하고 `OK_Sign` 홀드로 등록하는 화면 |
-| Combat | `assets/docs/04_combat.png` | AR 보드, 적 모델, 플레이어 카드 UI가 함께 보이는 전투 화면 |
-| Reward select | `assets/docs/05_reward_select.png` | 웨이브 클리어 후 보상 카드 3장이 표시되는 화면 |
-| Defeat restart | `assets/docs/06_defeat_restart.png` | 패배 후 `OK_Sign` 홀드로 게임을 재시작하는 화면 |
-
 ### Gameplay Demo Video
 
-> [문서화 TODO - 데모 영상 링크 추가 후 이 문단 삭제] 실제 플레이 데모 영상을 업로드한 뒤 아래 `Demo video` 항목에 링크를 추가하십시오. 영상 파일은 저장소에 직접 넣기보다 YouTube, Google Drive, OneDrive 같은 외부 링크를 사용하는 것을 권장합니다.
+- Demo video: [VisionQuest gameplay demo](https://youtu.be/x6soVcpUDPA)
+- Flow shown: QR connection -> phone camera streaming -> gate marker registration with `OK_Sign` -> AR combat -> simultaneous card reveal -> reward selection -> defeat/restart
 
-- Demo video: `TODO: add gameplay video URL`
-- Recommended length: 30-60 seconds
-- Suggested flow: QR connection -> phone camera streaming -> gate marker registration with `OK_Sign` -> combat card selection -> simultaneous reveal -> reward selection -> defeat/restart
+### Screenshots
+
+| Scene | Preview | Description |
+|---|---|---|
+| QR setup | <img src="assets/docs/01_qr_setup.png" width="260"> | PC 화면에 QR과 연결 주소가 표시되는 초기 화면 |
+| Connection example | <img src="assets/docs/02_connection_example.jpg" width="260"> | PC와 모바일 기기가 같은 게임 루프에 연결된 예시 |
+| Board registration | <img src="assets/docs/03_board_registration.png" width="260"> | gate marker를 감지하고 `OK_Sign` 홀드로 등록하는 화면 |
+| Combat | <img src="assets/docs/04_combat.png" width="260"> | AR 보드, 적 모델, 플레이어 카드 UI가 함께 보이는 전투 화면 |
+| Reward select | <img src="assets/docs/05_reward_select.png" width="260"> | 웨이브 클리어 후 보상 카드 3장이 표시되는 화면 |
+| Defeat restart | <img src="assets/docs/06_defeat_restart.png" width="260"> | 패배 후 `OK_Sign` 홀드로 게임을 재시작하는 화면 |
+
 ## 3. Requirements
 
 Python 3.10 기준으로 테스트했습니다.
@@ -111,10 +109,7 @@ VisionQuest는 시연 편의성을 위해 LAN 내부 HTTP 페이지(`http://<PC_
 
 Chrome에서 LAN HTTP 주소를 임시로 secure origin처럼 취급하려면 다음 절차를 사용합니다.
 
-> [문서화 TODO - 스크린샷 첨부 후 이 문단 삭제] 아래 위치에 `chrome://flags` 화면의 스크린샷을 추가하십시오.  
-> `assets/docs/07_chrome_flags_insecure_origin.png`
-
-![Chrome insecure origin flag screenshot placeholder](assets/docs/07_chrome_flags_insecure_origin.png)
+<img src="assets/docs/07_chrome_flags_insecure_origin.jpg" width="640" alt="Chrome insecure origin flag setting">
 
 1. 스마트폰 Chrome 주소창에 `chrome://flags/#unsafely-treat-insecure-origin-as-secure`를 입력합니다.
 2. `Insecure origins treated as secure` 항목을 찾습니다.
@@ -148,21 +143,11 @@ Chrome에서 LAN HTTP 주소를 임시로 secure origin처럼 취급하려면 �
 
 ### Marker Comparison Photos
 
-> [문서화 TODO - 실제 비교 사진 첨부 후 이 문단 삭제] 아래 세 이미지를 같은 카메라 거리, 같은 조명, 비슷한 종이 크기로 촬영해 넣으면 gate marker 선택 이유가 더 직관적으로 전달됩니다.
-
-| Photo | Recommended Path | What It Should Show |
+| Marker Type | Preview | Why It Matters |
 |---|---|---|
-| Current single gate marker | `assets/docs/marker_01_gate_marker.jpg` | 150 mm 정사각 외곽, 중앙 링, 짧은 stem이 한 장의 보드 마커로 동작하는 모습 |
-| Legacy four L markers | `assets/docs/marker_02_legacy_l_markers.jpg` | A4 네 모서리의 작은 L 표식과, 조명/손가림/slot 배정에 민감했던 구조 |
-| Chessboard option | `assets/docs/marker_03_chessboard_marker.jpg` | 많은 코너를 제공하지만 게임 분위기와 연산 비용 측면에서 기본값으로 쓰지 않은 대안 |
-
-사진을 추가한 뒤에는 아래처럼 실제 이미지를 README에 직접 표시할 수 있습니다.
-
-```markdown
-![Single gate marker](assets/docs/marker_01_gate_marker.jpg)
-![Legacy L markers](assets/docs/marker_02_legacy_l_markers.jpg)
-![Chessboard option](assets/docs/marker_03_chessboard_marker.jpg)
-```
+| Current single gate marker | <img src="assets/docs/marker_01_gate_marker.jpg" width="220"> | 150 mm 정사각 외곽, 중앙 링, 짧은 stem을 하나의 보드 마커로 사용합니다. 외곽 사각형은 homography 기준점이 되고, 내부 링과 stem은 오검출과 방향 모호성을 줄입니다. |
+| Legacy four L markers | <img src="assets/docs/marker_02_legacy_l_markers.jpg" width="220"> | A4 네 모서리를 직접 기준점으로 삼을 수 있지만, 작은 L 표식 네 개를 모두 안정적으로 slot 배정해야 해서 손가림, 조명, 원근 왜곡에 민감했습니다. |
+| Chessboard option | <img src="assets/docs/marker_03_chessboard_marker.jpg" width="220"> | 많은 코너를 제공하지만 던전/마법진 분위기를 해치고, 휴대폰 스트리밍, 손 인식, 3D 렌더링과 동시에 처리하기에는 코너 검출 비용이 큽니다. |
 
 STag 계열의 fiducial marker 연구는 안정적인 마커가 단순한 코너뿐 아니라 **명확한 외곽 구조**, **내부 검증 패턴**, **방향 또는 ID 모호성 제거**, **검출 confidence 평가**를 함께 가져야 한다는 점을 보여줍니다. VisionQuest의 gate marker는 이 아이디어를 손그림 가능한 형태로 단순화했습니다.
 
