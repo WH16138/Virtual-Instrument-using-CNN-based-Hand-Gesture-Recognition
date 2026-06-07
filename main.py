@@ -72,6 +72,15 @@ def get_display_size(window_name):
     return width, height
 
 
+def is_display_window_closed(window_name):
+    try:
+        if hasattr(cv2, "WND_PROP_VISIBLE"):
+            return cv2.getWindowProperty(window_name, cv2.WND_PROP_VISIBLE) < 1
+        return cv2.getWindowProperty(window_name, cv2.WND_PROP_AUTOSIZE) < 0
+    except cv2.error:
+        return True
+
+
 def display_frame_layout(frame_shape, target_width=None, target_height=None):
     target_width = DISPLAY_WIDTH if target_width is None else int(target_width)
     target_height = DISPLAY_HEIGHT if target_height is None else int(target_height)
@@ -610,7 +619,8 @@ def main():
                 websocket_server.publish_rendered_frame(waiting_frame)
                 display_width, display_height = get_display_size(WINDOW_NAME)
                 cv2.imshow(WINDOW_NAME, prepare_display_frame(waiting_frame, display_width, display_height))
-                if cv2.waitKey(1) & 0xFF == ord("q"):
+                key = cv2.waitKey(1) & 0xFF
+                if is_display_window_closed(WINDOW_NAME) or key == ord("q"):
                     break
                 continue
 
@@ -797,7 +807,7 @@ def main():
             cv2.imshow(WINDOW_NAME, display_frame)
             key = cv2.waitKey(1) & 0xFF
 
-            if key == ord("q"):
+            if is_display_window_closed(WINDOW_NAME) or key == ord("q"):
                 break
 
             if key == ord("d"):
