@@ -254,6 +254,13 @@ class GameManager:
                 "required_seconds": self.ACTION_HOLD_SECONDS,
                 "active": True,
             }
+            self._push_event(
+                "action_hold_start",
+                skill.name,
+                target="player",
+                gesture=gesture,
+                action=action,
+            )
             return False
 
         self.action_hold["gesture"] = gesture
@@ -295,6 +302,14 @@ class GameManager:
             self.reward_selection["started_at"] = now
             self.reward_selection["hold_progress"] = 0.0
             self.reward_selection["progress"] = 0.0
+            self._push_event(
+                "reward_hold_start",
+                choice.get("title", "Reward"),
+                target="player",
+                gesture=gesture,
+                action=slot_action,
+                reward=choice,
+            )
             return False
 
         elapsed = now - float(self.reward_selection.get("started_at", now) or now)

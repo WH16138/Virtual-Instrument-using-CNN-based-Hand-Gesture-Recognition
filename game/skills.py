@@ -15,8 +15,8 @@ class SkillManager:
         self.skills = {
             "Fist": Skill("Strike", damage=15, description="Close punch strike", action="Strike"),
             "Open_Palm": Skill("Guard", damage=0, description="Block the next incoming hit", action="Guard"),
-            "V_Sign": Skill("Arcane Shot", damage=15, description="Focused ranged shot", action="Shot"),
-            "Gun_Sign": Skill("Arcane Shot", damage=15, description="Focused ranged shot", action="Shot"),
+            "V_Sign": Skill("Shot", damage=15, description="Focused ranged shot", action="Shot"),
+            "Gun_Sign": Skill("Shot", damage=15, description="Focused ranged shot", action="Shot"),
         }
 
     def get_skill(self, gesture):

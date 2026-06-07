@@ -2,7 +2,7 @@
 
 Put PC playback audio files here. The game runs even when this folder is empty.
 
-The audio layer uses `pygame.mixer` through `audio/AudioManager`. SFX can be `.wav` or `.ogg`; BGM can be `.ogg`, `.mp3`, or `.wav`. Short WAV/OGG files are recommended for SFX, and loopable OGG files are recommended for BGM. If multiple BGM files match the same category, one is selected randomly when that BGM starts.
+The audio layer uses `pygame.mixer` through `audio/AudioManager`. SFX can be `.wav` or `.ogg`; BGM can be `.ogg`, `.mp3`, or `.wav`. Short WAV/OGG files are recommended for SFX, and loopable OGG files are recommended for BGM. If multiple BGM files match the same category, one is selected randomly when that BGM starts. The recommended location is `assets/audio/bgm/`, but the loader also searches other `assets/audio/` subfolders for matching `setup_*` or `dungeon_*` files to tolerate misplaced assets.
 
 ## BGM Files
 
@@ -19,6 +19,7 @@ The audio layer uses `pygame.mixer` through `audio/AudioManager`. SFX can be `.w
 |---|---|---|
 | `assets/audio/sfx/start.wav` | Board registration completes and the run starts after holding `OK_Sign`. | Magical gate open, start chime. |
 | `assets/audio/sfx/restart.wav` | Defeat screen restart completes after holding `OK_Sign`. | Short reset/respawn chime. |
+| `assets/audio/sfx/card_focus.wav` | A player action card or reward card first becomes the active hold target, including when the recognized card changes. Falls back to `card_confirm` if missing. | Soft hover, card focus, cursor tick. |
 | `assets/audio/sfx/card_confirm.wav` | Player card is confirmed and the simultaneous reveal begins. | Card flip, selection lock, UI confirm. |
 | `assets/audio/sfx/strike.wav` | Player `Strike` action event. | Punch, slash, blunt hit windup. |
 | `assets/audio/sfx/shot.wav` | Player `Shot` action event when it is not marked critical. | Magic bolt, projectile launch. |
@@ -33,7 +34,7 @@ The audio layer uses `pygame.mixer` through `audio/AudioManager`. SFX can be `.w
 | `assets/audio/sfx/reward_open.wav` | Reward selection opens after wave clear and the three reward cards appear. | Treasure chest open, reward fanfare, card spread. |
 | `assets/audio/sfx/reward_apply.wav` | A reward card is selected and applied after the hold completes. | Item pickup, upgrade confirm, rune absorb. |
 | `assets/audio/sfx/reward.wav` | Legacy fallback used when `reward_open` or `reward_apply` is missing. | Generic reward chime. |
-| `assets/audio/sfx/augment.wav` | Augment effect event such as Deep Rest, Chicken Game, Cull, Counter, Insurance, Vampire, or Prepared. | Passive proc, rune activation. |
+| `assets/audio/sfx/augment.wav` | Augment effect event such as Deep Rest, Chicken Game, Cull, Counter, Insurance, Vampire, or Prepared. `agument.wav` is accepted as a typo fallback. | Passive proc, rune activation. |
 | `assets/audio/sfx/defeat.wav` | Player dies and defeat event is emitted. | Defeat sting. |
 | `assets/audio/sfx/enemy_attack.wav` | Enemy `Attack` action event. | Monster swing, claw, bite. |
 | `assets/audio/sfx/enemy_skill.wav` | Enemy `Skill` action event. | Dark spell, monster special. |

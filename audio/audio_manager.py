@@ -14,6 +14,7 @@ class AudioManager:
         "start": ("sfx/start.wav", "sfx/start.ogg"),
         "restart": ("sfx/restart.wav", "sfx/restart.ogg"),
         "card_confirm": ("sfx/card_confirm.wav", "sfx/card_confirm.ogg"),
+        "card_focus": ("sfx/card_focus.wav", "sfx/card_focus.ogg", "sfx/card_confirm.wav", "sfx/card_confirm.ogg"),
         "strike": ("sfx/strike.wav", "sfx/strike.ogg"),
         "shot": ("sfx/shot.wav", "sfx/shot.ogg"),
         "guard": ("sfx/guard.wav", "sfx/guard.ogg"),
@@ -27,7 +28,7 @@ class AudioManager:
         "reward": ("sfx/reward.wav", "sfx/reward.ogg"),
         "reward_open": ("sfx/reward_open.wav", "sfx/reward_open.ogg", "sfx/reward.wav", "sfx/reward.ogg"),
         "reward_apply": ("sfx/reward_apply.wav", "sfx/reward_apply.ogg", "sfx/reward.wav", "sfx/reward.ogg"),
-        "augment": ("sfx/augment.wav", "sfx/augment.ogg"),
+        "augment": ("sfx/augment.wav", "sfx/augment.ogg", "sfx/agument.wav"),
         "defeat": ("sfx/defeat.wav", "sfx/defeat.ogg"),
         "enemy_attack": ("sfx/enemy_attack.wav", "sfx/enemy_attack.ogg"),
         "enemy_skill": ("sfx/enemy_skill.wav", "sfx/enemy_skill.ogg"),
@@ -46,6 +47,7 @@ class AudioManager:
         "miss": 0.12,
         "augment": 0.15,
         "card_confirm": 0.18,
+        "card_focus": 0.12,
     }
 
     def __init__(self, asset_root="assets/audio", sfx_volume=0.75, bgm_volume=0.35, enabled=True):
@@ -185,6 +187,14 @@ class AudioManager:
                     paths.append(path)
                     seen.add(path)
 
+        # Be tolerant during asset collection: if BGM files were accidentally
+        # placed under sfx/ or another audio subfolder, still find them by prefix.
+        for suffix in (".ogg", ".mp3", ".wav"):
+            for path in sorted(self.asset_root.rglob(f"{name}_*{suffix}")):
+                if path.exists() and path not in seen:
+                    paths.append(path)
+                    seen.add(path)
+
         self.loaded_bgm[name] = tuple(paths)
         return list(paths)
 
@@ -218,6 +228,8 @@ class AudioManager:
 
     def _event_sfx(self, event):
         event_type = event.get("event_type")
+        if event_type in ("action_hold_start", "reward_hold_start"):
+            return ["card_focus"]
         if event_type == "wave_start":
             return ["wave_start"]
         if event_type == "round_reveal":

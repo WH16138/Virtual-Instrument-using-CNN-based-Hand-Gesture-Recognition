@@ -1,0 +1,39 @@
+# Python caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments and local configuration
+.venv/
+venv/
+env/
+.env
+.env.*
+
+# Build and packaging artifacts
+build/
+dist/
+*.egg-info/
+*.zip
+*.7z
+*.tar
+*.tar.gz
+
+# Local runtime/generated files
+qr_code.png
+web/qr_code.png
+*.log
+
+# Raw capture/training datasets are excluded from the final submission package.
+# Runtime models used by the demo remain tracked under models/.
+dataset/
+dataset_landmarks/
+
+# OS/editor files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
