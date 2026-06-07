@@ -20,6 +20,7 @@ class HandTracker:
     ):
         self.model_path = Path(model_path) if model_path else self._find_model_path()
         self._install_tensorflow_doc_controls_stub()
+        self._install_matplotlib_stub()
         self.hand_module = importlib.import_module("mediapipe.tasks.python.vision.hand_landmarker")
         self.image_module = importlib.import_module("mediapipe.tasks.python.vision.core.image")
         self.hand_landmarker = self.hand_module.HandLandmarker.create_from_model_path(
@@ -62,6 +63,28 @@ class HandTracker:
         sys.modules["tensorflow.tools.docs"] = docs_module
         sys.modules["tensorflow.tools.docs.doc_controls"] = doc_controls_module
 
+    @staticmethod
+    def _install_matplotlib_stub():
+        """Avoid bundling matplotlib for MediaPipe's unused plotting helper."""
+        if "matplotlib" in sys.modules:
+            return
+
+        matplotlib_module = types.ModuleType("matplotlib")
+        pyplot_module = types.ModuleType("matplotlib.pyplot")
+
+        def _unused_plot(*_args, **_kwargs):
+            return None
+
+        pyplot_module.figure = _unused_plot
+        pyplot_module.show = _unused_plot
+        pyplot_module.close = _unused_plot
+        pyplot_module.gca = _unused_plot
+        pyplot_module.plot = _unused_plot
+        pyplot_module.scatter = _unused_plot
+        matplotlib_module.pyplot = pyplot_module
+
+        sys.modules["matplotlib"] = matplotlib_module
+        sys.modules["matplotlib.pyplot"] = pyplot_module
     def _find_model_path(self):
         candidates = [
             Path("models") / "hand_landmarker.task",

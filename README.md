@@ -1,7 +1,7 @@
 # VisionQuest
 
 **VisionQuest**는 스마트폰 카메라, 손 제스처 인식, 커스텀 마커 기반 AR 보드 추적을 결합한 실시간 AR 던전 전투 게임입니다.  
-대학교 컴퓨터 비전 텀프로젝트 제출용으로, 카메라 입력부터 제스처 분류, 평면 추적, 3D 렌더링, 게임 상호작용까지 하나의 실행 프로그램으로 동작하도록 구성했습니다.
+카메라 입력부터 제스처 분류, 평면 추적, 3D 렌더링, 게임 상호작용까지 하나의 실행 프로그램으로 동작하도록 구성했습니다.
 
 Last updated: 2026-06-07
 
@@ -26,19 +26,20 @@ Phone camera
 
 ## 2. Demo / Screenshots
 
-> [제출 준비용 TODO - 스크린샷 첨부 후 이 문단 삭제] 아래 표의 경로에 실제 실행 화면을 저장하고 README에 이미지 링크를 추가하십시오.
+> [문서화 TODO - 스크린샷 첨부 후 이 문단 삭제] 아래 표의 경로에 실제 실행 화면을 저장하고 README에 이미지 링크를 추가하십시오.
 
 | Scene | Recommended Path | Description |
 |---|---|---|
 | QR setup | `assets/docs/01_qr_setup.png` | PC 화면에 QR과 연결 주소가 표시되는 초기 화면 |
-| Board registration | `assets/docs/02_board_registration.png` | gate marker를 감지하고 `OK_Sign` 홀드로 등록하는 화면 |
-| Combat | `assets/docs/03_combat.png` | AR 보드, 적 모델, 플레이어 카드 UI가 함께 보이는 전투 화면 |
-| Reward select | `assets/docs/04_reward_select.png` | 웨이브 클리어 후 보상 카드 3장이 표시되는 화면 |
-| Defeat restart | `assets/docs/05_defeat_restart.png` | 패배 후 `OK_Sign` 홀드로 게임을 재시작하는 화면 |
+| Connection example | `assets/docs/02_connection_example.png` | PC 와 모바일 기기 연결 예시 |
+| Board registration | `assets/docs/03_board_registration.png` | gate marker를 감지하고 `OK_Sign` 홀드로 등록하는 화면 |
+| Combat | `assets/docs/04_combat.png` | AR 보드, 적 모델, 플레이어 카드 UI가 함께 보이는 전투 화면 |
+| Reward select | `assets/docs/05_reward_select.png` | 웨이브 클리어 후 보상 카드 3장이 표시되는 화면 |
+| Defeat restart | `assets/docs/06_defeat_restart.png` | 패배 후 `OK_Sign` 홀드로 게임을 재시작하는 화면 |
 
 ### Gameplay Demo Video
 
-> [제출 준비용 TODO - 데모 영상 링크 추가 후 이 문단 삭제] 실제 플레이 데모 영상을 업로드한 뒤 아래 `Demo video` 항목에 링크를 추가하십시오. 영상 파일은 저장소에 직접 넣기보다 YouTube, Google Drive, OneDrive 같은 외부 링크를 사용하는 것을 권장합니다.
+> [문서화 TODO - 데모 영상 링크 추가 후 이 문단 삭제] 실제 플레이 데모 영상을 업로드한 뒤 아래 `Demo video` 항목에 링크를 추가하십시오. 영상 파일은 저장소에 직접 넣기보다 YouTube, Google Drive, OneDrive 같은 외부 링크를 사용하는 것을 권장합니다.
 
 - Demo video: `TODO: add gameplay video URL`
 - Recommended length: 30-60 seconds
@@ -110,10 +111,10 @@ VisionQuest는 시연 편의성을 위해 LAN 내부 HTTP 페이지(`http://<PC_
 
 Chrome에서 LAN HTTP 주소를 임시로 secure origin처럼 취급하려면 다음 절차를 사용합니다.
 
-> [제출 준비용 TODO - 스크린샷 첨부 후 이 문단 삭제] 아래 위치에 `chrome://flags` 화면의 스크린샷을 추가하십시오.  
-> `assets/docs/06_chrome_flags_insecure_origin.png`
+> [문서화 TODO - 스크린샷 첨부 후 이 문단 삭제] 아래 위치에 `chrome://flags` 화면의 스크린샷을 추가하십시오.  
+> `assets/docs/07_chrome_flags_insecure_origin.png`
 
-![Chrome insecure origin flag screenshot placeholder](assets/docs/06_chrome_flags_insecure_origin.png)
+![Chrome insecure origin flag screenshot placeholder](assets/docs/07_chrome_flags_insecure_origin.png)
 
 1. 스마트폰 Chrome 주소창에 `chrome://flags/#unsafely-treat-insecure-origin-as-secure`를 입력합니다.
 2. `Insecure origins treated as secure` 항목을 찾습니다.
@@ -122,7 +123,7 @@ Chrome에서 LAN HTTP 주소를 임시로 secure origin처럼 취급하려면 �
 5. Chrome을 relaunch하거나 완전히 종료 후 다시 실행합니다.
 6. 다시 QR URL에 접속하고 카메라 권한을 허용합니다.
 
-주의: 이 설정은 수업 시연 또는 로컬 개발용 임시 우회입니다. 신뢰할 수 없는 주소를 추가하지 말고, 시연이 끝나면 해당 flag를 원래 상태로 되돌리는 것이 좋습니다.
+주의: 이 설정은 로컬 개발용 임시 우회입니다. 신뢰할 수 없는 주소를 추가하지 말고, 시연이 끝나면 해당 flag를 원래 상태로 되돌리는 것이 좋습니다.
 
 ## 5. Marker Design
 
@@ -144,6 +145,24 @@ Chrome에서 LAN HTTP 주소를 임시로 secure origin처럼 취급하려면 �
 | Four L-corner markers | A4 전체를 보드로 쓸 수 있고 각 코너가 직접적인 평면 기준점이 됨 | 각 L 표식이 작아 조명, 손가림, 볼펜 굵기, 배경 노이즈에 민감했습니다. 네 표식을 모두 slot에 올바르게 배정해야 하므로 오검출 하나가 전체 homography를 흔들었습니다. L의 열린 방향 추정도 원근 왜곡과 손그림 품질에 따라 불안정했습니다. 현재는 legacy 비교 경로로만 보존합니다. |
 | Chessboard marker | 많은 코너를 제공하므로 정밀 calibration/pose estimation에 유리함 | 게임 보드가 체스보드처럼 보여 던전/마법진 콘셉트와 맞지 않습니다. 또한 내부 격자 전체에서 다수 코너를 찾고 정렬해야 하므로 시연 중 프레임 비용이 커지고, 휴대폰 스트리밍 + 손 인식 + 3D 렌더링을 동시에 수행하는 현재 구조에서는 부담이 큽니다. 선택 옵션으로는 남길 수 있지만 기본값으로 쓰지 않습니다. |
 | Single gate marker | 큰 외곽 사각형으로 4개 코너를 안정적으로 얻고, 내부 링과 stem으로 오검출과 방향 모호성을 줄임 | A4 전체가 아니라 150 mm 정사각 마커 영역을 보드로 사용해야 합니다. 대신 연산량이 낮고 손으로 그리기 쉬우며 게임 분위기에 가장 잘 맞습니다. |
+
+### Marker Comparison Photos
+
+> [문서화 TODO - 실제 비교 사진 첨부 후 이 문단 삭제] 아래 세 이미지를 같은 카메라 거리, 같은 조명, 비슷한 종이 크기로 촬영해 넣으면 gate marker 선택 이유가 더 직관적으로 전달됩니다.
+
+| Photo | Recommended Path | What It Should Show |
+|---|---|---|
+| Current single gate marker | `assets/docs/marker_01_gate_marker.jpg` | 150 mm 정사각 외곽, 중앙 링, 짧은 stem이 한 장의 보드 마커로 동작하는 모습 |
+| Legacy four L markers | `assets/docs/marker_02_legacy_l_markers.jpg` | A4 네 모서리의 작은 L 표식과, 조명/손가림/slot 배정에 민감했던 구조 |
+| Chessboard option | `assets/docs/marker_03_chessboard_marker.jpg` | 많은 코너를 제공하지만 게임 분위기와 연산 비용 측면에서 기본값으로 쓰지 않은 대안 |
+
+사진을 추가한 뒤에는 아래처럼 실제 이미지를 README에 직접 표시할 수 있습니다.
+
+```markdown
+![Single gate marker](assets/docs/marker_01_gate_marker.jpg)
+![Legacy L markers](assets/docs/marker_02_legacy_l_markers.jpg)
+![Chessboard option](assets/docs/marker_03_chessboard_marker.jpg)
+```
 
 STag 계열의 fiducial marker 연구는 안정적인 마커가 단순한 코너뿐 아니라 **명확한 외곽 구조**, **내부 검증 패턴**, **방향 또는 ID 모호성 제거**, **검출 confidence 평가**를 함께 가져야 한다는 점을 보여줍니다. VisionQuest의 gate marker는 이 아이디어를 손그림 가능한 형태로 단순화했습니다.
 
@@ -355,7 +374,7 @@ models/train_cnn.py
 models/train.py
 ```
 
-제출 zip에서는 `dataset/`, `dataset_landmarks/`를 제외합니다. 모델을 재학습해야 하는 경우 별도 저장소 또는 Google Drive 링크로 데이터셋을 제공할 수 있습니다.
+공개 배포용 archive에서는 `dataset/`, `dataset_landmarks/`를 제외합니다. 모델을 재학습해야 하는 경우 별도 저장소 또는 Google Drive 링크로 데이터셋을 제공할 수 있습니다.
 
 ## 12. References and Credits
 
@@ -382,7 +401,7 @@ models/train.py
 
 에셋:
 
-- 현재 포함된 PNG, GLB, 오디오 에셋은 CC0 또는 자체 제작 에셋만 사용하는 제출 정책을 따릅니다.
+- 현재 포함된 PNG, GLB, 오디오 에셋은 CC0 또는 자체 제작 에셋만 사용하는 asset policy를 따릅니다.
 - 자세한 기록은 `assets/ASSET_LICENSES.md`를 참고하십시오.
 
 ## 13. Known Limitations
@@ -391,10 +410,10 @@ models/train.py
 - 카메라 intrinsic calibration은 근사값을 사용합니다.
 - `pyrender`는 로컬 OpenGL/offscreen rendering 환경에 의존합니다.
 - GLB animation clip 재생은 아직 지원하지 않습니다.
-- raw dataset은 최종 제출 zip에서 제외됩니다.
+- raw dataset은 공개 배포용 archive에서 제외됩니다.
 - 실제 인식 성능은 조명, 마커 선명도, 손 제스처 데이터 균형에 영향을 받습니다.
 
-## 14. Verification and Submission
+## 14. Verification and Packaging
 
 정적 검증:
 
@@ -410,18 +429,20 @@ python -m py_compile main.py ar/*.py game/*.py ui/*.py vision/*.py network/*.py 
 4. 전투 카드 선택, 보상 선택, defeat restart 확인
 5. BGM/SFX 재생 확인
 
-제출 패키지 정책:
+배포 archive 정책:
 
 - 포함: source code, `models/hand_landmarker.task`, `models/gesture_model.pkl`, `assets/`, `requirements.txt`, `README.md`, `LICENSE`
 - 제외: `.git/`, `dataset/`, `dataset_landmarks/`, `__pycache__/`, `*.pyc`, generated QR images, local zip files
-- 생성된 제출용 zip 예시: `VisionQuest_submission_20260607.zip`
+- 생성된 archive 예시: `VisionQuest_submission_20260607.zip`
 
-최종 제출은 e-Class에 Repository URL과 source zip을 함께 업로드합니다.
-## 15. Optional Executable Build
+공유 또는 재현용으로는 Repository URL과 source archive를 함께 제공하는 방식을 권장합니다.
+## 15. Executable Build Policy
 
-기본 제출물은 Repository URL과 source zip입니다. 실행 파일은 필수 제출물이 아니지만, Windows 환경에서 `python main.py` 없이 실행 가능한 배포 폴더를 추가로 만들 수 있습니다.
+기본 release archive에는 Windows exe 배포 폴더를 포함하지 않습니다. 기본 실행 방식은 `python main.py` 기준으로 안내합니다.
 
-권장 방식은 PyInstaller `onedir` 빌드입니다. `onefile`은 실행 시 대용량 라이브러리와 assets를 임시 폴더로 풀어야 해서 시작이 느리고, MediaPipe/OpenGL/pyrender 의존성 문제를 디버깅하기 어렵습니다.
+PyInstaller exe는 MediaPipe, OpenGL, pyrender, scikit-learn 등 숨은 의존성이 많아 평가 환경에 따라 누락 모듈이나 렌더링 문제가 발생할 수 있습니다. 따라서 exe는 검증된 별도 보조 배포가 필요할 때만 선택적으로 생성합니다.
+
+보조 exe가 필요한 경우 권장 방식은 PyInstaller `onedir` 빌드입니다. `onefile`은 실행 시 대용량 라이브러리와 assets를 임시 폴더로 풀어야 해서 시작이 느리고, 의존성 문제를 디버깅하기 어렵습니다.
 
 예시 명령:
 
@@ -438,10 +459,10 @@ pyinstaller --noconfirm --onedir --windowed --name VisionQuest `
   main.py
 ```
 
-빌드 결과는 `dist/VisionQuest/VisionQuest.exe` 형태로 생성됩니다. 제출 zip에 포함하려면 `dist/VisionQuest/` 폴더 전체를 별도 zip으로 묶는 것이 안전합니다.
+빌드 결과는 `dist/VisionQuest/VisionQuest.exe` 형태로 생성됩니다. 이 폴더는 기본 source archive에서 제외합니다.
 
 주의 사항:
 
 - exe 배포본은 source zip보다 훨씬 커질 수 있습니다.
 - 대상 PC에 OpenGL/offscreen rendering 환경이 맞지 않으면 pyrender가 실패할 수 있습니다.
-- 최종 평가는 Repository URL과 source code 기준이므로, exe는 보조 제출물로만 취급하는 것이 안전합니다.
+- 기본 배포와 재현성 검증은 Python source 실행을 기준으로 합니다.
